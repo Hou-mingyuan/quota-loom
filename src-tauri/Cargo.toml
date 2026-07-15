@@ -1,0 +1,49 @@
+[package]
+name = "quota-loom"
+version = "0.1.0"
+description = "Local-first AI coding usage analytics in a cross-platform floating window"
+authors = ["EricSmOOn"]
+license = "MIT"
+repository = "https://github.com/EricsmOOn/quota-loom"
+homepage = "https://github.com/EricsmOOn/quota-loom"
+readme = "../README.md"
+keywords = ["tauri", "codex", "claude", "tokens", "analytics"]
+categories = ["visualization"]
+publish = false
+edition = "2021"
+rust-version = "1.96"
+build = "build.rs"
+
+[lib]
+name = "quota_loom"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "quota-loom"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde"] }
+directories = "6.0.0"
+notify = "8.2.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+rust_decimal = "1.39.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"], optional = true }
+tauri-plugin-autostart = { version = "2.5.1", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+thiserror = "2.0.17"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = "3.23.0"

@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            args: --target aarch64-apple-darwin --no-sign
+            rust-target: aarch64-apple-darwin
+          - name: macOS Intel
+            platform: macos-latest
+            args: --target x86_64-apple-darwin --no-sign
+            rust-target: x86_64-apple-darwin
+          - name: Linux x86-64
+            platform: ubuntu-22.04
+            args: --no-sign
+            rust-target: ""
+          - name: Windows x86-64
+            platform: windows-latest
+            args: --no-sign
+            rust-target: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install Rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - name: Verify version and tag
+        run: npm run version:check
+
+      - name: Build and upload release
+        id: tauri
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: QuotaLoom v__VERSION__
+          releaseBody: |
+            > [!WARNING]
+            > 当前自动构建尚未进行正式代码签名或 Apple 公证，macOS Gatekeeper 与 Windows SmartScreen 可能显示安全警告。仓库公开后，安装前请核对 GitHub Artifact Attestation。
+            >
+            > These automated builds are not yet formally code-signed or Apple-notarized. macOS Gatekeeper and Windows SmartScreen may display security warnings. Once the repository is public, verify the GitHub Artifact Attestation before installation.
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          retryAttempts: 2
+          args: ${{ matrix.args }}
+
+      - name: Prepare artifact path list
+        id: artifacts
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { appendFileSync } from "node:fs";
+          import { randomUUID } from "node:crypto";
+          const paths = JSON.parse(process.env.ARTIFACT_PATHS ?? "[]");
+          if (paths.length === 0) throw new Error("Tauri produced no release artifacts");
+          const delimiter = `artifact_paths_${randomUUID()}`;
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `paths<<${delimiter}\n${paths.join("\n")}\n${delimiter}\n`,
+          );
+          EOF
+
+      - name: Attest build artifacts
+        if: github.event.repository.private == false
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.artifacts.outputs.paths }}
