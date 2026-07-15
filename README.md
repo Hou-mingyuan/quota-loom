@@ -8,6 +8,13 @@
   简体中文 · <a href="README.en.md">English</a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/EricsmOOn/quota-loom/actions/workflows/ci.yml"><img src="https://github.com/EricsmOOn/quota-loom/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/EricsmOOn/quota-loom/actions/workflows/release.yml"><img src="https://github.com/EricsmOOn/quota-loom/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/EricsmOOn/quota-loom/releases/latest"><img src="https://img.shields.io/github/v/release/EricsmOOn/quota-loom?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/EricsmOOn/quota-loom" alt="License"></a>
+</p>
+
 QuotaLoom 是一款本地优先的桌面用量统计工具，支持 Claude Code、Codex CLI 和 ChatGPT Codex。它增量解析本机会话 JSONL，提供常驻桌面的悬浮窗和完整统计面板。
 
 > [!IMPORTANT]

@@ -8,6 +8,13 @@
   <a href="README.md">简体中文</a> · English
 </p>
 
+<p align="center">
+  <a href="https://github.com/EricsmOOn/quota-loom/actions/workflows/ci.yml"><img src="https://github.com/EricsmOOn/quota-loom/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/EricsmOOn/quota-loom/actions/workflows/release.yml"><img src="https://github.com/EricsmOOn/quota-loom/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/EricsmOOn/quota-loom/releases/latest"><img src="https://img.shields.io/github/v/release/EricsmOOn/quota-loom?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/EricsmOOn/quota-loom" alt="License"></a>
+</p>
+
 QuotaLoom is a local-first desktop usage dashboard for Claude Code, Codex CLI, and ChatGPT Codex. It incrementally parses local JSONL session files and presents the results in an always-available floating panel and a full dashboard.
 
 > [!IMPORTANT]
