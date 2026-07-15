@@ -83,11 +83,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: QuotaLoom v__VERSION__
-          releaseBody: |
-            > [!WARNING]
-            > 当前自动构建尚未进行正式代码签名或 Apple 公证，macOS Gatekeeper 与 Windows SmartScreen 可能显示安全警告。仓库公开后，安装前请核对 GitHub Artifact Attestation。
-            >
-            > These automated builds are not yet formally code-signed or Apple-notarized. macOS Gatekeeper and Windows SmartScreen may display security warnings. Once the repository is public, verify the GitHub Artifact Attestation before installation.
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true

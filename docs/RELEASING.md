@@ -15,7 +15,7 @@
 
 ## 签名状态
 
-当前工作流发布未签名、未公证的安装包，并在 Release Notes 中显示安全警告。macOS Gatekeeper 和 Windows SmartScreen 可能在安装时拦截或警告；这不影响自动构建和发布。
+当前工作流发布未签名、未公证的安装包。macOS Gatekeeper 和 Windows SmartScreen 可能在安装时拦截或警告；这不影响自动构建和发布。
 
 后续需要正式签名时，应配置：
 
@@ -38,7 +38,7 @@ git push origin v0.1.0
 
 - 所有平台构建任务通过。
 - 文件名和架构正确，没有意外的调试产物。
-- 未签名状态已在 Release Notes 中明确说明；启用签名后再验证 macOS、Windows 签名及 Apple 公证。
+- 启用签名后验证 macOS、Windows 签名及 Apple 公证。
 - 公开仓库的 GitHub Artifact Attestation 可验证；个人账户名下的私有仓库会跳过此步骤。
 - 在干净设备或虚拟机上执行安装、启动、托盘、悬浮窗和数据目录选择冒烟测试。
 - Release Notes 包含升级风险、已知限制和校验说明。
