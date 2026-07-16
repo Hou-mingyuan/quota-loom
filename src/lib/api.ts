@@ -175,6 +175,7 @@ function demoSnapshot(range: UsageRange): UsageSnapshot {
   const dailyCosts = Array.from(dailyCostTotals, ([dayStart, cost]) => ({
     dayStart,
     estimatedCostUsd: cost.toFixed(6),
+    hasUnpricedUsage: false,
   }));
   return {
     generatedAt: Math.floor(Date.now() / 1000),
@@ -197,6 +198,7 @@ function demoSnapshot(range: UsageRange): UsageSnapshot {
       threads: 9,
       cacheHitRate: 0.711,
       estimatedCostUsd: "4.8289",
+      unpricedModels: 0,
     },
     trends,
     dailyCosts,

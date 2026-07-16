@@ -257,8 +257,12 @@ export function FloatingPanel() {
                     ? null
                     : Number(summary.estimatedCostUsd)
                 }
-                label="COST"
-                ariaLabel="预计费用"
+                label={summary?.unpricedModels ? "COST*" : "COST"}
+                ariaLabel={
+                  summary?.unpricedModels
+                    ? "预计费用，仅包含已定价模型"
+                    : "预计费用"
+                }
                 className="cost"
                 formatValue={formatFloatingCost}
                 formatDelta={formatFloatingCost}
