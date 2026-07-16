@@ -47,7 +47,10 @@ import type {
   UsageTrendPoint,
 } from "../types";
 
-type TrendChartPoint = UsageTrendPoint & { dailyCostUsd: number | null };
+type TrendChartPoint = UsageTrendPoint & {
+  dailyCostUsd: number | null;
+  dailyCostHasUnpricedUsage: boolean;
+};
 
 const rangeOptions: Array<{ value: RangePreset; label: string }> = [
   { value: "today", label: "今日" },
@@ -206,7 +209,13 @@ export function Dashboard() {
               <strong>
                 {formatCost(snapshot.summary.estimatedCostUsd, 1)}
               </strong>
-              <span>按当前模型价格估算</span>
+              <span>
+                {snapshot.summary.unpricedModels > 0
+                  ? snapshot.summary.estimatedCostUsd === null
+                    ? `${snapshot.summary.unpricedModels} 个模型未配置价格`
+                    : `已定价部分 · ${snapshot.summary.unpricedModels} 个模型未定价`
+                  : "按当前模型价格估算"}
+              </span>
             </article>
 
             {weeklyUsage ? (
@@ -744,6 +753,7 @@ function mergeTrendAndDailyCosts(
     return {
       ...point,
       dailyCostUsd: Number.isFinite(dailyCostUsd) ? dailyCostUsd : null,
+      dailyCostHasUnpricedUsage: day?.hasUnpricedUsage ?? false,
     };
   });
 }
@@ -766,7 +776,9 @@ function TrendTooltip({
         {formatTokens(point.outputTokens)}
       </span>
       <b>
-        每日总 COST{" "}
+        {point.dailyCostUsd !== null && point.dailyCostHasUnpricedUsage
+          ? "每日已定价 COST "
+          : "每日总 COST "}
         {formatCost(
           point.dailyCostUsd === null ? null : String(point.dailyCostUsd),
           1,

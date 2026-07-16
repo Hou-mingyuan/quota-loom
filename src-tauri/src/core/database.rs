@@ -349,7 +349,7 @@ impl UsageDatabase {
             ..UsageSummary::default()
         };
         let mut total_cost = Decimal::ZERO;
-        let mut all_priced = true;
+        let mut has_priced_model = false;
         for model in &mut models {
             let totals = TokenTotals {
                 input_tokens: model
@@ -362,8 +362,9 @@ impl UsageDatabase {
             model.estimated_cost_usd = cost.map(format_cost);
             if let Some(cost) = cost {
                 total_cost += cost;
+                has_priced_model = true;
             } else {
-                all_priced = false;
+                summary.unpriced_models = summary.unpriced_models.saturating_add(1);
             }
             summary.total_tokens = summary.total_tokens.saturating_add(model.total_tokens);
             summary.fresh_input_tokens = summary
@@ -383,7 +384,7 @@ impl UsageDatabase {
         } else {
             0.0
         };
-        summary.estimated_cost_usd = all_priced.then(|| format_cost(total_cost));
+        summary.estimated_cost_usd = has_priced_model.then(|| format_cost(total_cost));
 
         let mut recent = query_recent(&connection, range, 30)?;
         for event in &mut recent {
@@ -547,23 +548,29 @@ fn query_daily_costs(
         })
         .map_err(|error| error.to_string())?;
 
-    let mut days = std::collections::BTreeMap::<i64, (Decimal, bool)>::new();
+    let mut days = std::collections::BTreeMap::<i64, (Decimal, bool, bool)>::new();
     for row in rows {
         let (day_start, model, tokens) = row.map_err(|error| error.to_string())?;
-        let entry = days.entry(day_start).or_insert((Decimal::ZERO, true));
+        let entry = days
+            .entry(day_start)
+            .or_insert((Decimal::ZERO, false, false));
         if let Some(price) = prices.get(&model) {
             entry.0 += price.estimate(tokens);
+            entry.1 = true;
         } else {
-            entry.1 = false;
+            entry.2 = true;
         }
     }
 
     Ok(days
         .into_iter()
-        .map(|(day_start, (cost, all_priced))| DailyCostPoint {
-            day_start,
-            estimated_cost_usd: all_priced.then(|| format_cost(cost)),
-        })
+        .map(
+            |(day_start, (cost, has_priced_usage, has_unpriced_usage))| DailyCostPoint {
+                day_start,
+                estimated_cost_usd: has_priced_usage.then(|| format_cost(cost)),
+                has_unpriced_usage,
+            },
+        )
         .collect())
 }
 
@@ -655,9 +662,106 @@ mod tests {
         assert_eq!(snapshot.summary.output_tokens, 200);
         assert_eq!(snapshot.summary.cache_hit_rate, 0.75);
         assert!(snapshot.summary.estimated_cost_usd.is_some());
+        assert_eq!(snapshot.summary.unpriced_models, 0);
         assert_eq!(snapshot.daily_costs.len(), 1);
         assert!(snapshot.daily_costs[0].estimated_cost_usd.is_some());
+        assert!(!snapshot.daily_costs[0].has_unpriced_usage);
         assert!(snapshot.recent[0].estimated_cost_usd.is_some());
+    }
+
+    #[test]
+    fn preserves_priced_totals_when_other_models_are_unpriced() {
+        let database = UsageDatabase::open_in_memory().unwrap();
+        database
+            .apply_parse_outcome(&ParseOutcome {
+                cursor: SessionCursor {
+                    source_key: "mixed-source".into(),
+                    path: "mixed.jsonl".into(),
+                    current_model: "unpriced-codex".into(),
+                    ..SessionCursor::default()
+                },
+                events: vec![
+                    UsageEvent {
+                        id: "codex:mixed:1".into(),
+                        source_key: "mixed-source".into(),
+                        thread_id: "mixed".into(),
+                        event_index: 1,
+                        occurred_at: 100,
+                        model: "gpt-5.3-codex".into(),
+                        tokens: TokenTotals {
+                            input_tokens: 1_000_000,
+                            cached_input_tokens: 0,
+                            output_tokens: 1_000_000,
+                        },
+                        source_file: "mixed.jsonl".into(),
+                    },
+                    UsageEvent {
+                        id: "codex:mixed:2".into(),
+                        source_key: "mixed-source".into(),
+                        thread_id: "mixed".into(),
+                        event_index: 2,
+                        occurred_at: 200,
+                        model: "unpriced-codex".into(),
+                        tokens: TokenTotals {
+                            input_tokens: 1_000_000,
+                            cached_input_tokens: 0,
+                            output_tokens: 1_000_000,
+                        },
+                        source_file: "mixed.jsonl".into(),
+                    },
+                    UsageEvent {
+                        id: "codex:mixed:3".into(),
+                        source_key: "mixed-source".into(),
+                        thread_id: "mixed".into(),
+                        event_index: 3,
+                        occurred_at: 86_500,
+                        model: "unpriced-codex".into(),
+                        tokens: TokenTotals {
+                            input_tokens: 1_000,
+                            cached_input_tokens: 0,
+                            output_tokens: 1_000,
+                        },
+                        source_file: "mixed.jsonl".into(),
+                    },
+                ],
+                reset_required: false,
+            })
+            .unwrap();
+
+        let snapshot = database
+            .snapshot(
+                Path::new("/tmp/.codex"),
+                DataSourceKind::CodexCli,
+                UsageRange {
+                    start_at: 0,
+                    end_at: 90_000,
+                    bucket_seconds: 60,
+                    timezone_offset_seconds: 0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            snapshot.summary.estimated_cost_usd.as_deref(),
+            Some("15.75")
+        );
+        assert_eq!(snapshot.summary.unpriced_models, 1);
+        assert_eq!(snapshot.daily_costs.len(), 2);
+        assert_eq!(
+            snapshot.daily_costs[0].estimated_cost_usd.as_deref(),
+            Some("15.75")
+        );
+        assert!(snapshot.daily_costs[0].has_unpriced_usage);
+        assert_eq!(snapshot.daily_costs[1].estimated_cost_usd, None);
+        assert!(snapshot.daily_costs[1].has_unpriced_usage);
+        assert_eq!(
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.model == "unpriced-codex")
+                .and_then(|model| model.estimated_cost_usd.as_deref()),
+            None
+        );
     }
 
     #[test]

@@ -115,6 +115,7 @@ pub struct UsageSummary {
     pub threads: u64,
     pub cache_hit_rate: f64,
     pub estimated_cost_usd: Option<String>,
+    pub unpriced_models: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,6 +134,7 @@ pub struct UsageTrendPoint {
 pub struct DailyCostPoint {
     pub day_start: i64,
     pub estimated_cost_usd: Option<String>,
+    pub has_unpriced_usage: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

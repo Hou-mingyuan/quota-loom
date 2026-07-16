@@ -14,6 +14,7 @@ export interface UsageSummary {
   threads: number;
   cacheHitRate: number;
   estimatedCostUsd: string | null;
+  unpricedModels: number;
 }
 
 export interface UsageTrendPoint {
@@ -28,6 +29,7 @@ export interface UsageTrendPoint {
 export interface DailyCostPoint {
   dayStart: number;
   estimatedCostUsd: string | null;
+  hasUnpricedUsage: boolean;
 }
 
 export interface ModelUsage {
