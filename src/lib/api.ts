@@ -92,6 +92,7 @@ export async function getUsedModelPrices() {
         outputPerMillion: "14",
         multiplier: "1",
         configured: true,
+        customized: false,
       },
       {
         model: "custom-codex",
@@ -100,6 +101,7 @@ export async function getUsedModelPrices() {
         outputPerMillion: "",
         multiplier: "1",
         configured: false,
+        customized: false,
       },
     ] satisfies ModelPriceEntry[];
   }
@@ -111,9 +113,15 @@ export async function refreshModelsDevPrices() {
   return invoke<number>("refresh_models_dev_prices");
 }
 
-export async function updateModelMultiplier(model: string, multiplier: string) {
+export async function updateModelPrice(entry: ModelPriceEntry) {
   if (isDesktopRuntime())
-    await invoke("update_model_multiplier", { model, multiplier });
+    await invoke("update_model_price", {
+      model: entry.model,
+      inputPerMillion: entry.inputPerMillion,
+      cachedInputPerMillion: entry.cachedInputPerMillion,
+      outputPerMillion: entry.outputPerMillion,
+      multiplier: entry.multiplier,
+    });
 }
 
 function demoSnapshot(range: UsageRange): UsageSnapshot {

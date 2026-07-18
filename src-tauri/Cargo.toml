@@ -1,6 +1,6 @@
 [package]
 name = "quota-loom"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first AI coding usage analytics in a cross-platform floating window"
 authors = ["EricSmOOn"]
 license = "MIT"

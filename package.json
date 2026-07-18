@@ -1,7 +1,7 @@
 {
   "name": "quota-loom",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local-first desktop usage analytics for Claude Code, Codex CLI, and ChatGPT Codex.",
   "license": "MIT",
   "author": "EricSmOOn",

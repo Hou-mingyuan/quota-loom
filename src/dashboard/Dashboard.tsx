@@ -29,7 +29,7 @@ import {
   refreshModelsDevPrices,
   resetUsageCache,
   syncUsage,
-  updateModelMultiplier,
+  updateModelPrice,
 } from "../lib/api";
 import {
   formatCost,
@@ -531,10 +531,18 @@ function ModelPriceEditor({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  function updateMultiplier(model: string, value: string) {
+  function updatePrice(
+    model: string,
+    field:
+      | "inputPerMillion"
+      | "cachedInputPerMillion"
+      | "outputPerMillion"
+      | "multiplier",
+    value: string,
+  ) {
     setPrices((entries) =>
       entries.map((entry) =>
-        entry.model === model ? { ...entry, multiplier: value } : entry,
+        entry.model === model ? { ...entry, [field]: value } : entry,
       ),
     );
     setMessage(undefined);
@@ -544,7 +552,8 @@ function ModelPriceEditor({ onClose }: { onClose: () => void }) {
     setSavingModel(entry.model);
     setMessage(undefined);
     try {
-      await updateModelMultiplier(entry.model, entry.multiplier);
+      await updateModelPrice(entry);
+      setPrices(await getUsedModelPrices());
       setMessage(`已保存 ${entry.model}`);
     } catch (error) {
       setMessage(String(error));
@@ -571,8 +580,8 @@ function ModelPriceEditor({ onClose }: { onClose: () => void }) {
           </button>
         </header>
         <p className="price-editor-note">
-          价格由 models.dev 提供，单位为 USD / 1M Tokens。倍率 `1` 为原价，`0.8`
-          表示八折。
+          可直接修改单价，单位为 USD / 1M Tokens；自定义价格不会被 models.dev
+          刷新覆盖。倍率 `1` 为原价，`0.8` 表示八折。
         </p>
         <div className="price-editor-columns" aria-hidden="true">
           <span>模型</span>
@@ -592,24 +601,49 @@ function ModelPriceEditor({ onClose }: { onClose: () => void }) {
           ) : (
             prices.map((entry) => {
               const complete =
-                entry.configured &&
-                entry.multiplier.trim() !== "" &&
-                Number(entry.multiplier) >= 0;
+                isNonNegativeNumber(entry.inputPerMillion) &&
+                isNonNegativeNumber(entry.cachedInputPerMillion) &&
+                isNonNegativeNumber(entry.outputPerMillion) &&
+                isNonNegativeNumber(entry.multiplier);
               return (
                 <div className="price-editor-row" key={entry.model}>
                   <div className="price-model-name">
                     <strong>{entry.model}</strong>
                     <small>
-                      {entry.configured ? "models.dev" : "未匹配价格"}
+                      {entry.customized
+                        ? "用户自定义"
+                        : entry.configured
+                          ? "models.dev"
+                          : "未匹配价格 · 可手动填写"}
                     </small>
                   </div>
-                  <PriceValue value={entry.inputPerMillion} />
-                  <PriceValue value={entry.cachedInputPerMillion} />
-                  <PriceValue value={entry.outputPerMillion} />
+                  <PriceInput
+                    label={`${entry.model} input price`}
+                    value={entry.inputPerMillion}
+                    onChange={(value) =>
+                      updatePrice(entry.model, "inputPerMillion", value)
+                    }
+                  />
+                  <PriceInput
+                    label={`${entry.model} cached input price`}
+                    value={entry.cachedInputPerMillion}
+                    onChange={(value) =>
+                      updatePrice(entry.model, "cachedInputPerMillion", value)
+                    }
+                  />
+                  <PriceInput
+                    label={`${entry.model} output price`}
+                    value={entry.outputPerMillion}
+                    onChange={(value) =>
+                      updatePrice(entry.model, "outputPerMillion", value)
+                    }
+                  />
                   <PriceInput
                     label={`${entry.model} price multiplier`}
                     value={entry.multiplier}
-                    onChange={(value) => updateMultiplier(entry.model, value)}
+                    onChange={(value) =>
+                      updatePrice(entry.model, "multiplier", value)
+                    }
                   />
                   <button
                     className="price-save-button"
@@ -632,10 +666,10 @@ function ModelPriceEditor({ onClose }: { onClose: () => void }) {
   );
 }
 
-function PriceValue({ value }: { value: string }) {
-  return (
-    <span className="price-readonly">{value === "" ? "—" : `$${value}`}</span>
-  );
+function isNonNegativeNumber(value: string) {
+  if (value.trim() === "") return false;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0;
 }
 
 function PriceInput({
@@ -651,7 +685,7 @@ function PriceInput({
     <input
       type="number"
       min="0"
-      step="0.000001"
+      step="any"
       inputMode="decimal"
       aria-label={label}
       placeholder="0.00"

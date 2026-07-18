@@ -89,6 +89,7 @@ impl UsageDatabase {
                     cached_input_per_million TEXT NOT NULL,
                     output_per_million TEXT NOT NULL,
                     multiplier TEXT NOT NULL DEFAULT '1',
+                    is_custom INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL
                 );",
             )
@@ -106,6 +107,23 @@ impl UsageDatabase {
             connection
                 .execute(
                     "ALTER TABLE model_prices ADD COLUMN multiplier TEXT NOT NULL DEFAULT '1'",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        let has_is_custom = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('model_prices') WHERE name = 'is_custom'
+                 )",
+                [],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !has_is_custom {
+            connection
+                .execute(
+                    "ALTER TABLE model_prices ADD COLUMN is_custom INTEGER NOT NULL DEFAULT 0",
                     [],
                 )
                 .map_err(|error| error.to_string())?;
@@ -249,7 +267,8 @@ impl UsageDatabase {
                         COALESCE(prices.cached_input_per_million, ''),
                         COALESCE(prices.output_per_million, ''),
                         COALESCE(prices.multiplier, '1'),
-                        prices.model_id IS NOT NULL
+                        prices.model_id IS NOT NULL,
+                        COALESCE(prices.is_custom, 0) != 0
                  FROM (SELECT DISTINCT model FROM usage_events) AS used
                  LEFT JOIN model_prices AS prices ON prices.model_id = used.model
                  ORDER BY used.model COLLATE NOCASE",
@@ -264,6 +283,7 @@ impl UsageDatabase {
                     output_per_million: row.get(3)?,
                     multiplier: row.get(4)?,
                     configured: row.get(5)?,
+                    customized: row.get(6)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -286,9 +306,12 @@ impl UsageDatabase {
                      VALUES (?1, ?2, ?3, ?4, ?5, '1', strftime('%s','now'))
                      ON CONFLICT(model_id) DO UPDATE SET
                         display_name=excluded.display_name,
-                        input_per_million=excluded.input_per_million,
-                        cached_input_per_million=excluded.cached_input_per_million,
-                        output_per_million=excluded.output_per_million,
+                        input_per_million=CASE WHEN model_prices.is_custom = 0
+                            THEN excluded.input_per_million ELSE model_prices.input_per_million END,
+                        cached_input_per_million=CASE WHEN model_prices.is_custom = 0
+                            THEN excluded.cached_input_per_million ELSE model_prices.cached_input_per_million END,
+                        output_per_million=CASE WHEN model_prices.is_custom = 0
+                            THEN excluded.output_per_million ELSE model_prices.output_per_million END,
                         updated_at=excluded.updated_at",
                     params![
                         price.model,
@@ -304,23 +327,77 @@ impl UsageDatabase {
         Ok(imported)
     }
 
-    pub fn update_model_multiplier(&self, model: &str, multiplier: &str) -> Result<(), String> {
-        let multiplier = multiplier
-            .parse::<Decimal>()
-            .map_err(|_| "倍率必须是有效数字".to_string())?;
-        if multiplier.is_sign_negative() {
-            return Err("倍率不能为负数".to_string());
+    pub fn update_model_price(
+        &self,
+        model: &str,
+        input_per_million: &str,
+        cached_input_per_million: &str,
+        output_per_million: &str,
+        multiplier: &str,
+    ) -> Result<(), String> {
+        if model.trim().is_empty() {
+            return Err("模型名称不能为空".to_string());
         }
+        let input = parse_non_negative_decimal(input_per_million, "输入价格")?;
+        let cached = parse_non_negative_decimal(cached_input_per_million, "缓存输入价格")?;
+        let output = parse_non_negative_decimal(output_per_million, "输出价格")?;
+        let multiplier = parse_non_negative_decimal(multiplier, "倍率")?;
+        let input = input.normalize().to_string();
+        let cached = cached.normalize().to_string();
+        let output = output.normalize().to_string();
+        let multiplier = multiplier.normalize().to_string();
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
-        let updated = connection
-            .execute(
-                "UPDATE model_prices SET multiplier = ?1, updated_at = strftime('%s','now')
-                 WHERE model_id = ?2",
-                params![multiplier.normalize().to_string(), model],
+        let existing = connection
+            .query_row(
+                "SELECT input_per_million, cached_input_per_million, output_per_million, is_custom
+                 FROM model_prices WHERE model_id = ?1",
+                [model],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                    ))
+                },
             )
+            .optional()
             .map_err(|error| error.to_string())?;
-        if updated == 0 {
-            return Err(format!("models.dev 中没有模型 {model} 的价格"));
+
+        if let Some((current_input, current_cached, current_output, already_custom)) = existing {
+            let prices_changed = decimal_strings_differ(&current_input, &input)
+                || decimal_strings_differ(&current_cached, &cached)
+                || decimal_strings_differ(&current_output, &output);
+            connection
+                .execute(
+                    "UPDATE model_prices SET
+                        input_per_million = ?1,
+                        cached_input_per_million = ?2,
+                        output_per_million = ?3,
+                        multiplier = ?4,
+                        is_custom = ?5,
+                        updated_at = strftime('%s','now')
+                     WHERE model_id = ?6",
+                    params![
+                        input,
+                        cached,
+                        output,
+                        multiplier,
+                        i64::from(already_custom || prices_changed),
+                        model,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO model_prices
+                    (model_id, display_name, input_per_million, cached_input_per_million,
+                     output_per_million, multiplier, is_custom, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, ?4, ?5, 1, strftime('%s','now'))",
+                    params![model, input, cached, output, multiplier],
+                )
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }
@@ -609,6 +686,24 @@ fn format_cost(cost: Decimal) -> String {
     cost.round_dp(6).normalize().to_string()
 }
 
+fn parse_non_negative_decimal(value: &str, label: &str) -> Result<Decimal, String> {
+    let value = value
+        .trim()
+        .parse::<Decimal>()
+        .map_err(|_| format!("{label}必须是有效数字"))?;
+    if value.is_sign_negative() {
+        return Err(format!("{label}不能为负数"));
+    }
+    Ok(value)
+}
+
+fn decimal_strings_differ(left: &str, right: &str) -> bool {
+    match (left.parse::<Decimal>(), right.parse::<Decimal>()) {
+        (Ok(left), Ok(right)) => left != right,
+        _ => left != right,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,19 +892,29 @@ mod tests {
         assert_eq!(prices.len(), 1);
         assert_eq!(prices[0].model, "custom-codex");
         assert!(!prices[0].configured);
+        assert!(!prices[0].customized);
+
+        database
+            .update_model_price("custom-codex", "2", "0.2", "10", "0.5")
+            .unwrap();
+        let prices = database.used_model_prices().unwrap();
+        assert!(prices[0].configured);
+        assert!(prices[0].customized);
+        assert_eq!(prices[0].input_per_million, "2");
 
         database
             .import_catalog_prices(&[CatalogModelPrice {
                 model: "custom-codex".into(),
                 display_name: "Custom Codex".into(),
-                input_per_million: "2".into(),
-                cached_input_per_million: "0.2".into(),
-                output_per_million: "10".into(),
+                input_per_million: "99".into(),
+                cached_input_per_million: "9.9".into(),
+                output_per_million: "999".into(),
             }])
             .unwrap();
-        database
-            .update_model_multiplier("custom-codex", "0.5")
-            .unwrap();
+        let prices = database.used_model_prices().unwrap();
+        assert_eq!(prices[0].input_per_million, "2");
+        assert_eq!(prices[0].cached_input_per_million, "0.2");
+        assert_eq!(prices[0].output_per_million, "10");
         let snapshot = database
             .snapshot(
                 Path::new("/tmp/.codex"),

@@ -159,6 +159,7 @@ pub struct ModelPriceEntry {
     pub output_per_million: String,
     pub multiplier: String,
     pub configured: bool,
+    pub customized: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

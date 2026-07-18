@@ -218,8 +218,21 @@ impl UsageService {
         self.database.used_model_prices()
     }
 
-    pub fn update_model_multiplier(&self, model: &str, multiplier: &str) -> Result<(), String> {
-        self.database.update_model_multiplier(model, multiplier)
+    pub fn update_model_price(
+        &self,
+        model: &str,
+        input_per_million: &str,
+        cached_input_per_million: &str,
+        output_per_million: &str,
+        multiplier: &str,
+    ) -> Result<(), String> {
+        self.database.update_model_price(
+            model,
+            input_per_million,
+            cached_input_per_million,
+            output_per_million,
+            multiplier,
+        )
     }
 
     pub fn refresh_models_dev_prices(&self) -> Result<u64, String> {

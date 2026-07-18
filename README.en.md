@@ -26,7 +26,7 @@ QuotaLoom is a local-first desktop usage dashboard for Claude Code, Codex CLI, a
 - Separate fresh input, cached input, and model output totals.
 - Call, session, cache-hit, and model distribution statistics.
 - Weekly allowance usage and reset time for ChatGPT Codex accounts.
-- Estimated costs from the current model catalog with custom multipliers.
+- Estimated costs from the current model catalog with custom model prices and multipliers.
 - Incremental parsing that handles appended, truncated, and actively written logs.
 - A floating panel, full dashboard, and system tray integration.
 

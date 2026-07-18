@@ -85,7 +85,7 @@ pub fn run() {
             set_codex_home,
             get_used_model_prices,
             refresh_models_dev_prices,
-            update_model_multiplier,
+            update_model_price,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run QuotaLoom");
@@ -207,13 +207,22 @@ fn get_used_model_prices(
 }
 
 #[tauri::command]
-fn update_model_multiplier(
+fn update_model_price(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     model: String,
+    input_per_million: String,
+    cached_input_per_million: String,
+    output_per_million: String,
     multiplier: String,
 ) -> Result<(), String> {
-    state.service.update_model_multiplier(&model, &multiplier)?;
+    state.service.update_model_price(
+        &model,
+        &input_per_million,
+        &cached_input_per_million,
+        &output_per_million,
+        &multiplier,
+    )?;
     let _ = app.emit(USAGE_UPDATED_EVENT, ());
     Ok(())
 }

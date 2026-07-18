@@ -50,6 +50,7 @@ export interface ModelPriceEntry {
   outputPerMillion: string;
   multiplier: string;
   configured: boolean;
+  customized: boolean;
 }
 
 export interface RecentUsageEvent {
