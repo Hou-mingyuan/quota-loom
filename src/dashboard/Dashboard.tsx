@@ -106,7 +106,7 @@ export function Dashboard() {
           </div>
           <div>
             <strong>{snapshot?.sourceBrand ?? "CODEX CLI / USAGE"}</strong>
-            <span>LOCAL TELEMETRY INSTRUMENT</span>
+            <span>LOCAL TELEMETRY INSTRUMENT · V{__APP_VERSION__}</span>
           </div>
         </div>
         <div className="topbar-actions">
