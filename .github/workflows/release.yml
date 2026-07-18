@@ -26,11 +26,11 @@ jobs:
         include:
           - name: macOS Apple Silicon
             platform: macos-latest
-            args: --target aarch64-apple-darwin --no-sign
+            args: --target aarch64-apple-darwin
             rust-target: aarch64-apple-darwin
           - name: macOS Intel
             platform: macos-latest
-            args: --target x86_64-apple-darwin --no-sign
+            args: --target x86_64-apple-darwin
             rust-target: x86_64-apple-darwin
           - name: Linux x86-64
             platform: ubuntu-22.04
@@ -90,6 +90,10 @@ jobs:
           uploadUpdaterSignatures: false
           retryAttempts: 2
           args: ${{ matrix.args }}
+
+      - name: Verify macOS app signature
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict --verbose=2 "src-tauri/target/${{ matrix.rust-target }}/release/bundle/macos/QuotaLoom.app"
 
       - name: Prepare artifact path list
         id: artifacts

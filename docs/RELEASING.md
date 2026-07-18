@@ -15,7 +15,7 @@
 
 ## 签名状态
 
-当前工作流发布未签名、未公证的安装包。macOS Gatekeeper 和 Windows SmartScreen 可能在安装时拦截或警告；这不影响自动构建和发布。
+当前工作流为 macOS 安装包应用 ad-hoc 签名，但未进行 Apple 公证；首次启动时 Gatekeeper 仍可能要求用户在“隐私与安全性”中手动允许。Windows 安装包尚未签名，SmartScreen 可能拦截或警告。
 
 后续需要正式签名时，应配置：
 
@@ -23,7 +23,7 @@
 - Windows 代码签名证书或受信任签名服务凭据
 - Tauri Updater 私钥（仅在启用自动更新后）
 
-这些凭据不得出现在 PR 工作流、仓库文件、日志或普通环境变量中。配置签名前，还需要恢复工作流中的平台签名步骤，并通过 GitHub Secrets 注入凭据。
+这些凭据不得出现在 PR 工作流、仓库文件、日志或普通环境变量中。配置正式签名时，应通过 GitHub Secrets 注入凭据，并将当前 macOS ad-hoc 身份替换为 Developer ID Application 身份。
 
 ## 创建发布
 
