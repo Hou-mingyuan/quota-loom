@@ -24,10 +24,6 @@ export interface UsageTrendPoint {
   cachedInputTokens: number;
   outputTokens: number;
   calls: number;
-}
-
-export interface DailyCostPoint {
-  dayStart: number;
   estimatedCostUsd: string | null;
   hasUnpricedUsage: boolean;
 }
@@ -73,7 +69,6 @@ export interface UsageSnapshot {
   sourceBrand: string;
   summary: UsageSummary;
   trends: UsageTrendPoint[];
-  dailyCosts: DailyCostPoint[];
   models: ModelUsage[];
   recent: RecentUsageEvent[];
 }

@@ -1,7 +1,7 @@
 use crate::core::pricing::{CatalogModelPrice, ModelPrice, DEFAULT_PRICES};
 use crate::core::types::{
-    DailyCostPoint, DataSourceKind, ModelPriceEntry, ModelUsage, ParseOutcome, RecentUsageEvent,
-    SessionCursor, TokenTotals, UsageRange, UsageSnapshot, UsageSummary, UsageTrendPoint,
+    DataSourceKind, ModelPriceEntry, ModelUsage, ParseOutcome, RecentUsageEvent, SessionCursor,
+    TokenTotals, UsageRange, UsageSnapshot, UsageSummary, UsageTrendPoint,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::Decimal;
@@ -484,8 +484,7 @@ impl UsageDatabase {
             source_label: source_kind.label().to_string(),
             source_brand: source_kind.brand().to_string(),
             summary,
-            trends: query_trends(&connection, range)?,
-            daily_costs: query_daily_costs(&connection, range, &prices)?,
+            trends: query_trends(&connection, range, &prices)?,
             models,
             recent,
         })
@@ -529,34 +528,81 @@ fn query_models(connection: &Connection, range: UsageRange) -> Result<Vec<ModelU
 fn query_trends(
     connection: &Connection,
     range: UsageRange,
+    prices: &std::collections::HashMap<String, ModelPrice>,
 ) -> Result<Vec<UsageTrendPoint>, String> {
     let bucket = range.bucket_seconds.max(60);
     let mut statement = connection
         .prepare(
             "SELECT (occurred_at / ?1) * ?1 AS bucket_start,
+                    model,
                     COALESCE(SUM(input_tokens),0), COALESCE(SUM(cached_input_tokens),0),
                     COALESCE(SUM(output_tokens),0), COUNT(*)
              FROM usage_events WHERE occurred_at >= ?2 AND occurred_at <= ?3
-             GROUP BY bucket_start ORDER BY bucket_start ASC",
+             GROUP BY bucket_start, model ORDER BY bucket_start ASC",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(params![bucket, range.start_at, range.end_at], |row| {
-            let input = row.get::<_, i64>(1)?.max(0) as u64;
-            let cached = (row.get::<_, i64>(2)?.max(0) as u64).min(input);
-            let output = row.get::<_, i64>(3)?.max(0) as u64;
-            Ok(UsageTrendPoint {
-                bucket_start: row.get(0)?,
-                total_tokens: input.saturating_add(output),
-                fresh_input_tokens: input.saturating_sub(cached),
-                cached_input_tokens: cached,
-                output_tokens: output,
-                calls: row.get::<_, i64>(4)?.max(0) as u64,
-            })
+            let input = row.get::<_, i64>(2)?.max(0) as u64;
+            let cached = (row.get::<_, i64>(3)?.max(0) as u64).min(input);
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                TokenTotals {
+                    input_tokens: input,
+                    cached_input_tokens: cached,
+                    output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
+                },
+                row.get::<_, i64>(5)?.max(0) as u64,
+            ))
         })
         .map_err(|error| error.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())
+
+    let mut buckets =
+        std::collections::BTreeMap::<i64, (TokenTotals, u64, Decimal, bool, bool)>::new();
+    for row in rows {
+        let (bucket_start, model, tokens, calls) = row.map_err(|error| error.to_string())?;
+        let entry = buckets.entry(bucket_start).or_insert((
+            TokenTotals::default(),
+            0,
+            Decimal::ZERO,
+            false,
+            false,
+        ));
+        entry.0.input_tokens = entry.0.input_tokens.saturating_add(tokens.input_tokens);
+        entry.0.cached_input_tokens = entry
+            .0
+            .cached_input_tokens
+            .saturating_add(tokens.cached_input_tokens);
+        entry.0.output_tokens = entry.0.output_tokens.saturating_add(tokens.output_tokens);
+        entry.1 = entry.1.saturating_add(calls);
+        if let Some(price) = prices.get(&model) {
+            entry.2 += price.estimate(tokens);
+            entry.3 = true;
+        } else {
+            entry.4 = true;
+        }
+    }
+
+    Ok(buckets
+        .into_iter()
+        .map(
+            |(bucket_start, (tokens, calls, cost, has_priced_usage, has_unpriced_usage))| {
+                UsageTrendPoint {
+                    bucket_start,
+                    total_tokens: tokens.input_tokens.saturating_add(tokens.output_tokens),
+                    fresh_input_tokens: tokens
+                        .input_tokens
+                        .saturating_sub(tokens.cached_input_tokens),
+                    cached_input_tokens: tokens.cached_input_tokens,
+                    output_tokens: tokens.output_tokens,
+                    calls,
+                    estimated_cost_usd: has_priced_usage.then(|| format_cost(cost)),
+                    has_unpriced_usage,
+                }
+            },
+        )
+        .collect())
 }
 
 fn query_recent(
@@ -591,64 +637,6 @@ fn query_recent(
         .map_err(|error| error.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())
-}
-
-fn query_daily_costs(
-    connection: &Connection,
-    range: UsageRange,
-    prices: &std::collections::HashMap<String, ModelPrice>,
-) -> Result<Vec<DailyCostPoint>, String> {
-    let offset = range.timezone_offset_seconds.clamp(-86_400, 86_400);
-    let first_day_start = ((range.start_at.saturating_add(offset)) / 86_400) * 86_400 - offset;
-    let mut statement = connection
-        .prepare(
-            "SELECT ((occurred_at + ?1) / 86400) * 86400 - ?1 AS day_start, model,
-                    COALESCE(SUM(input_tokens),0), COALESCE(SUM(cached_input_tokens),0),
-                    COALESCE(SUM(output_tokens),0)
-             FROM usage_events WHERE occurred_at >= ?2 AND occurred_at <= ?3
-             GROUP BY day_start, model ORDER BY day_start ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map(params![offset, first_day_start, range.end_at], |row| {
-            let input = row.get::<_, i64>(2)?.max(0) as u64;
-            let cached = (row.get::<_, i64>(3)?.max(0) as u64).min(input);
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                TokenTotals {
-                    input_tokens: input,
-                    cached_input_tokens: cached,
-                    output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
-                },
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-
-    let mut days = std::collections::BTreeMap::<i64, (Decimal, bool, bool)>::new();
-    for row in rows {
-        let (day_start, model, tokens) = row.map_err(|error| error.to_string())?;
-        let entry = days
-            .entry(day_start)
-            .or_insert((Decimal::ZERO, false, false));
-        if let Some(price) = prices.get(&model) {
-            entry.0 += price.estimate(tokens);
-            entry.1 = true;
-        } else {
-            entry.2 = true;
-        }
-    }
-
-    Ok(days
-        .into_iter()
-        .map(
-            |(day_start, (cost, has_priced_usage, has_unpriced_usage))| DailyCostPoint {
-                day_start,
-                estimated_cost_usd: has_priced_usage.then(|| format_cost(cost)),
-                has_unpriced_usage,
-            },
-        )
-        .collect())
 }
 
 fn load_prices(
@@ -758,9 +746,9 @@ mod tests {
         assert_eq!(snapshot.summary.cache_hit_rate, 0.75);
         assert!(snapshot.summary.estimated_cost_usd.is_some());
         assert_eq!(snapshot.summary.unpriced_models, 0);
-        assert_eq!(snapshot.daily_costs.len(), 1);
-        assert!(snapshot.daily_costs[0].estimated_cost_usd.is_some());
-        assert!(!snapshot.daily_costs[0].has_unpriced_usage);
+        assert_eq!(snapshot.trends.len(), 1);
+        assert!(snapshot.trends[0].estimated_cost_usd.is_some());
+        assert!(!snapshot.trends[0].has_unpriced_usage);
         assert!(snapshot.recent[0].estimated_cost_usd.is_some());
     }
 
@@ -795,7 +783,7 @@ mod tests {
                         source_key: "mixed-source".into(),
                         thread_id: "mixed".into(),
                         event_index: 2,
-                        occurred_at: 200,
+                        occurred_at: 110,
                         model: "unpriced-codex".into(),
                         tokens: TokenTotals {
                             input_tokens: 1_000_000,
@@ -841,14 +829,14 @@ mod tests {
             Some("15.75")
         );
         assert_eq!(snapshot.summary.unpriced_models, 1);
-        assert_eq!(snapshot.daily_costs.len(), 2);
+        assert_eq!(snapshot.trends.len(), 2);
         assert_eq!(
-            snapshot.daily_costs[0].estimated_cost_usd.as_deref(),
+            snapshot.trends[0].estimated_cost_usd.as_deref(),
             Some("15.75")
         );
-        assert!(snapshot.daily_costs[0].has_unpriced_usage);
-        assert_eq!(snapshot.daily_costs[1].estimated_cost_usd, None);
-        assert!(snapshot.daily_costs[1].has_unpriced_usage);
+        assert!(snapshot.trends[0].has_unpriced_usage);
+        assert_eq!(snapshot.trends[1].estimated_cost_usd, None);
+        assert!(snapshot.trends[1].has_unpriced_usage);
         assert_eq!(
             snapshot
                 .models
@@ -928,9 +916,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot.summary.estimated_cost_usd.as_deref(), Some("6"));
-        assert_eq!(
-            snapshot.daily_costs[0].estimated_cost_usd.as_deref(),
-            Some("6")
-        );
+        assert_eq!(snapshot.trends[0].estimated_cost_usd.as_deref(), Some("6"));
     }
 }

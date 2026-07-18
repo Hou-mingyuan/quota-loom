@@ -40,16 +40,10 @@ import {
   formatTokens,
 } from "../lib/format";
 import { useUsage, useWeeklyUsage } from "../hooks/useUsage";
-import type {
-  DailyCostPoint,
-  ModelPriceEntry,
-  RangePreset,
-  UsageTrendPoint,
-} from "../types";
+import type { ModelPriceEntry, RangePreset, UsageTrendPoint } from "../types";
 
 type TrendChartPoint = UsageTrendPoint & {
-  dailyCostUsd: number | null;
-  dailyCostHasUnpricedUsage: boolean;
+  costUsd: number | null;
 };
 
 const rangeOptions: Array<{ value: RangePreset; label: string }> = [
@@ -68,10 +62,8 @@ export function Dashboard() {
   const query = useUsage(preset);
   const weeklyUsage = useWeeklyUsage().data;
   const snapshot = query.data;
-  const trendData = snapshot
-    ? mergeTrendAndDailyCosts(snapshot.trends, snapshot.dailyCosts)
-    : [];
-  const hasDailyCost = trendData.some((point) => point.dailyCostUsd !== null);
+  const trendData = snapshot ? normalizeTrendCosts(snapshot.trends) : [];
+  const hasCost = trendData.some((point) => point.costUsd !== null);
 
   async function refresh() {
     await syncUsage();
@@ -274,7 +266,7 @@ export function Dashboard() {
               <PanelHeading
                 code="A01"
                 title="Token 趋势"
-                meta={`${snapshot.trends.length} 桶 · 每日 COST`}
+                meta={`${snapshot.trends.length} 桶 · COST 同步分段`}
               />
               <div className="chart-wrap">
                 <ResponsiveContainer width="100%" height="100%">
@@ -345,7 +337,7 @@ export function Dashboard() {
                       axisLine={false}
                       tickLine={false}
                     />
-                    {hasDailyCost ? (
+                    {hasCost ? (
                       <YAxis
                         yAxisId="cost"
                         orientation="right"
@@ -390,11 +382,11 @@ export function Dashboard() {
                       fill="url(#outputArea)"
                       strokeWidth={2}
                     />
-                    {hasDailyCost ? (
+                    {hasCost ? (
                       <Line
                         yAxisId="cost"
                         type="stepAfter"
-                        dataKey="dailyCostUsd"
+                        dataKey="costUsd"
                         stroke="#8e0c24"
                         strokeWidth={3}
                         strokeDasharray="7 4"
@@ -771,23 +763,13 @@ function TokenComposition({
   );
 }
 
-function mergeTrendAndDailyCosts(
-  trends: UsageTrendPoint[],
-  dailyCosts: DailyCostPoint[],
-): TrendChartPoint[] {
+function normalizeTrendCosts(trends: UsageTrendPoint[]): TrendChartPoint[] {
   return trends.map((point) => {
-    const day = dailyCosts.find(
-      ({ dayStart }) =>
-        point.bucketStart >= dayStart && point.bucketStart < dayStart + 86_400,
-    );
-    const dailyCostUsd =
-      day?.estimatedCostUsd === null || day?.estimatedCostUsd === undefined
-        ? null
-        : Number(day.estimatedCostUsd);
+    const costUsd =
+      point.estimatedCostUsd === null ? null : Number(point.estimatedCostUsd);
     return {
       ...point,
-      dailyCostUsd: Number.isFinite(dailyCostUsd) ? dailyCostUsd : null,
-      dailyCostHasUnpricedUsage: day?.hasUnpricedUsage ?? false,
+      costUsd: Number.isFinite(costUsd) ? costUsd : null,
     };
   });
 }
@@ -810,13 +792,10 @@ function TrendTooltip({
         {formatTokens(point.outputTokens)}
       </span>
       <b>
-        {point.dailyCostUsd !== null && point.dailyCostHasUnpricedUsage
-          ? "每日已定价 COST "
-          : "每日总 COST "}
-        {formatCost(
-          point.dailyCostUsd === null ? null : String(point.dailyCostUsd),
-          1,
-        )}
+        {point.costUsd !== null && point.hasUnpricedUsage
+          ? "本桶已定价 COST "
+          : "本桶总 COST "}
+        {formatCost(point.costUsd === null ? null : String(point.costUsd), 1)}
       </b>
     </div>
   );

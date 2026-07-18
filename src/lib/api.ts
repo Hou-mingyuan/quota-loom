@@ -165,26 +165,13 @@ function demoSnapshot(range: UsageRange): UsageSnapshot {
       cachedInputTokens: cached,
       outputTokens: output,
       calls: Math.max(1, Math.round(2 + pulse * 3)),
+      estimatedCostUsd: (
+        (fresh * 1.75 + cached * 0.175 + output * 14) /
+        1_000_000
+      ).toFixed(6),
+      hasUnpricedUsage: false,
     };
   });
-  const dailyCostTotals = new Map<number, number>();
-  for (const point of trends) {
-    const dayStart =
-      Math.floor((point.bucketStart + range.timezoneOffsetSeconds) / 86_400) *
-        86_400 -
-      range.timezoneOffsetSeconds;
-    const cost =
-      (point.freshInputTokens * 1.75 +
-        point.cachedInputTokens * 0.175 +
-        point.outputTokens * 14) /
-      1_000_000;
-    dailyCostTotals.set(dayStart, (dailyCostTotals.get(dayStart) ?? 0) + cost);
-  }
-  const dailyCosts = Array.from(dailyCostTotals, ([dayStart, cost]) => ({
-    dayStart,
-    estimatedCostUsd: cost.toFixed(6),
-    hasUnpricedUsage: false,
-  }));
   return {
     generatedAt: Math.floor(Date.now() / 1000),
     codexHome: "~/.codex",
@@ -209,7 +196,6 @@ function demoSnapshot(range: UsageRange): UsageSnapshot {
       unpricedModels: 0,
     },
     trends,
-    dailyCosts,
     models,
     recent: models.flatMap((model, modelIndex) =>
       Array.from({ length: modelIndex === 0 ? 5 : 2 }, (_, index) => ({

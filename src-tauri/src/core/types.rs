@@ -127,12 +127,6 @@ pub struct UsageTrendPoint {
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub calls: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DailyCostPoint {
-    pub day_start: i64,
     pub estimated_cost_usd: Option<String>,
     pub has_unpriced_usage: bool,
 }
@@ -186,7 +180,6 @@ pub struct UsageSnapshot {
     pub source_brand: String,
     pub summary: UsageSummary,
     pub trends: Vec<UsageTrendPoint>,
-    pub daily_costs: Vec<DailyCostPoint>,
     pub models: Vec<ModelUsage>,
     pub recent: Vec<RecentUsageEvent>,
 }
