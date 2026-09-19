@@ -129,6 +129,7 @@ pub fn parse_session_file_for_source(
         DataSourceKind::CodexCli | DataSourceKind::ChatGptCodex => {
             parse_session_file(path, previous_cursor)
         }
+        DataSourceKind::ZCode => parse_zcode_session_file(path, previous_cursor),
     }
 }
 
@@ -271,6 +272,167 @@ fn process_claude_line(
         tokens: delta,
         source_file: path.to_string_lossy().to_string(),
     });
+}
+
+fn parse_zcode_session_file(
+    path: &Path,
+    previous_cursor: Option<SessionCursor>,
+) -> Result<ParseOutcome, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("无法读取会话文件元数据 {}: {error}", path.display()))?;
+    let file_size = metadata.len();
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    let key = source_key(path);
+    let reset_required = previous_cursor
+        .as_ref()
+        .is_some_and(|cursor| file_size < cursor.byte_offset);
+    let mut cursor = if reset_required {
+        SessionCursor::default()
+    } else {
+        previous_cursor.unwrap_or_default()
+    };
+    cursor.source_key = key.clone();
+    cursor.path = path.to_string_lossy().to_string();
+    if cursor.current_model.is_empty() {
+        cursor.current_model = "unknown".to_string();
+    }
+
+    if !reset_required && cursor.file_size == file_size && cursor.modified_ns == modified_ns {
+        return Ok(ParseOutcome {
+            cursor,
+            events: Vec::new(),
+            reset_required: false,
+        });
+    }
+
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("无法打开会话文件 {}: {error}", path.display()))?;
+    file.seek(SeekFrom::Start(cursor.byte_offset))
+        .map_err(|error| format!("无法定位会话文件 {}: {error}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut events = Vec::new();
+    let mut consumed_offset = cursor.byte_offset;
+
+    loop {
+        let mut bytes = Vec::new();
+        let read = reader
+            .read_until(b'\n', &mut bytes)
+            .map_err(|error| format!("读取会话文件失败 {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        if !bytes.ends_with(b"\n") {
+            break;
+        }
+        consumed_offset = consumed_offset.saturating_add(read as u64);
+        let Ok(line) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        process_zcode_line(line.trim_end(), &key, path, &mut cursor, &mut events);
+    }
+
+    cursor.byte_offset = consumed_offset;
+    cursor.file_size = file_size;
+    cursor.modified_ns = modified_ns;
+
+    Ok(ParseOutcome {
+        cursor,
+        events,
+        reset_required,
+    })
+}
+
+fn process_zcode_line(
+    line: &str,
+    source_key: &str,
+    path: &Path,
+    cursor: &mut SessionCursor,
+    events: &mut Vec<UsageEvent>,
+) {
+    if !line.contains("\"model_io\"") || !line.contains("\"usage\"") {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("model_io") {
+        return;
+    }
+    let Some(usage) = zcode_usage(&value) else {
+        return;
+    };
+    // ZCode 的 inputTokens 不含缓存读/写（totalTokens == inputTokens + outputTokens），
+    // 缓存读/写单独计，这里与 Claude 口径对齐：input 汇总含缓存。
+    let input_tokens = number(usage.get("inputTokens"))
+        .or_else(|| number(usage.get("input_tokens")))
+        .unwrap_or(0);
+    let cache_read_tokens = number(usage.get("cacheReadTokens"))
+        .or_else(|| number(usage.get("cache_read_input_tokens")))
+        .unwrap_or(0);
+    let cache_write_tokens = number(usage.get("cacheWriteTokens"))
+        .or_else(|| number(usage.get("cache_creation_input_tokens")))
+        .unwrap_or(0);
+    let output_tokens = number(usage.get("outputTokens"))
+        .or_else(|| number(usage.get("output_tokens")))
+        .unwrap_or(0);
+    let delta = TokenTotals {
+        input_tokens: input_tokens
+            .saturating_add(cache_read_tokens)
+            .saturating_add(cache_write_tokens),
+        cached_input_tokens: cache_read_tokens.saturating_add(cache_write_tokens),
+        output_tokens,
+    };
+    if delta.is_zero() {
+        return;
+    }
+    if let Some(model) = value
+        .pointer("/model/modelId")
+        .or_else(|| value.pointer("/model/model"))
+        .and_then(Value::as_str)
+    {
+        cursor.current_model = normalize_model(model);
+    }
+    let thread_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| cursor.thread_id.clone())
+        .unwrap_or_else(|| source_key.to_string());
+    cursor.thread_id = Some(thread_id.clone());
+    cursor.event_index = cursor.event_index.saturating_add(1);
+    let occurred_at = value
+        .get("startedAt")
+        .and_then(Value::as_str)
+        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let event_index = cursor.event_index;
+    events.push(UsageEvent {
+        id: format!("zcode:{thread_id}:{event_index}"),
+        source_key: source_key.to_string(),
+        thread_id,
+        event_index,
+        occurred_at,
+        model: cursor.current_model.clone(),
+        tokens: delta,
+        source_file: path.to_string_lossy().to_string(),
+    });
+}
+
+fn zcode_usage(value: &Value) -> Option<&Value> {
+    value
+        .pointer("/response/usage")
+        .filter(|usage| usage.is_object())
+        .or_else(|| {
+            value
+                .pointer("/response/providerMetadata/anthropic/usage")
+                .filter(|usage| usage.is_object())
+        })
 }
 
 fn process_line(
@@ -576,5 +738,125 @@ mod tests {
         assert_eq!(outcome.events.len(), 1);
         assert_eq!(outcome.events[0].thread_id, "child");
         assert_eq!(outcome.events[0].tokens.input_tokens, 80);
+    }
+
+    fn zcode_usage_line(
+        session_id: Option<&str>,
+        input: u64,
+        cache_read: u64,
+        output: u64,
+    ) -> String {
+        let mut value = serde_json::json!({
+            "type":"model_io",
+            "startedAt":"2026-07-14T08:00:00.852Z",
+            "model":{"modelId":"GLM-5.3-Flash","providerId":"builtin:bigmodel-start-plan"},
+            "request":{"messages":[]},
+            "response":{"usage":{
+                "inputTokens":input,
+                "cacheReadTokens":cache_read,
+                "cacheWriteTokens":0,
+                "outputTokens":output,
+                "totalTokens":input + output
+            }}
+        });
+        if let Some(session_id) = session_id {
+            value["sessionId"] = serde_json::json!(session_id);
+        }
+        line(value)
+    }
+
+    #[test]
+    fn parses_zcode_usage_records() {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(
+            file,
+            "{}{}",
+            zcode_usage_line(Some("sess_abc"), 100, 40, 20),
+            zcode_usage_line(None, 10, 0, 3),
+        )
+        .unwrap();
+
+        let outcome =
+            parse_session_file_for_source(file.path(), None, DataSourceKind::ZCode).unwrap();
+        assert_eq!(outcome.events.len(), 2);
+        assert_eq!(outcome.events[0].id, "zcode:sess_abc:1");
+        assert_eq!(outcome.events[0].thread_id, "sess_abc");
+        assert_eq!(outcome.events[0].model, "glm-5.3-flash");
+        assert_eq!(outcome.events[0].occurred_at, 1_784_016_000);
+        assert_eq!(outcome.events[0].tokens.input_tokens, 140);
+        assert_eq!(outcome.events[0].tokens.cached_input_tokens, 40);
+        assert_eq!(outcome.events[0].tokens.output_tokens, 20);
+        // 行内缺 sessionId 时沿用游标里最近一次的会话 ID
+        assert_eq!(outcome.events[1].thread_id, "sess_abc");
+        assert_eq!(outcome.events[1].tokens.input_tokens, 10);
+        assert_eq!(outcome.events[1].tokens.output_tokens, 3);
+    }
+
+    #[test]
+    fn falls_back_to_source_key_without_session_id() {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", zcode_usage_line(None, 5, 0, 1)).unwrap();
+
+        let outcome =
+            parse_session_file_for_source(file.path(), None, DataSourceKind::ZCode).unwrap();
+        assert_eq!(outcome.events.len(), 1);
+        assert_eq!(
+            outcome.events[0].thread_id,
+            file.path().file_name().unwrap().to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn skips_zcode_lines_without_usage_and_counts_retries() {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(
+            file,
+            "{}{}{}{}",
+            line(serde_json::json!({
+                "type":"model_io",
+                "sessionId":"sess_err",
+                "error":{"name":"ProviderBusinessError","message":"user concurrency limit exceeded"},
+                "response":null
+            })),
+            line(serde_json::json!({
+                "modelIOReset":{"maxFileBytes":67108864,"previousFileBytes":67129850,"reason":"session_file_size_limit"}
+            })),
+            zcode_usage_line(Some("sess_err"), 50, 10, 5),
+            zcode_usage_line(Some("sess_err"), 60, 0, 7),
+        )
+        .unwrap();
+
+        let outcome =
+            parse_session_file_for_source(file.path(), None, DataSourceKind::ZCode).unwrap();
+        assert_eq!(outcome.events.len(), 2);
+        assert_eq!(outcome.events[0].thread_id, "sess_err");
+        assert_eq!(outcome.events[0].tokens.input_tokens, 60);
+        assert_eq!(outcome.events[1].tokens.input_tokens, 60);
+    }
+
+    #[test]
+    fn falls_back_to_snake_case_provider_usage() {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(
+            file,
+            "{}",
+            line(serde_json::json!({
+                "type":"model_io",
+                "sessionId":"sess_snake",
+                "response":{"providerMetadata":{"anthropic":{"usage":{
+                    "input_tokens":200,
+                    "cache_read_input_tokens":50,
+                    "output_tokens":30
+                }}}}
+            }))
+        )
+        .unwrap();
+
+        let outcome =
+            parse_session_file_for_source(file.path(), None, DataSourceKind::ZCode).unwrap();
+        assert_eq!(outcome.events.len(), 1);
+        assert_eq!(outcome.events[0].tokens.input_tokens, 250);
+        assert_eq!(outcome.events[0].tokens.cached_input_tokens, 50);
+        assert_eq!(outcome.events[0].tokens.output_tokens, 30);
     }
 }

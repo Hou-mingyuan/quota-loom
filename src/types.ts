@@ -64,7 +64,7 @@ export interface RecentUsageEvent {
 export interface UsageSnapshot {
   generatedAt: number;
   codexHome: string;
-  sourceKind: "claudeCode" | "codexCli" | "chatGptCodex";
+  sourceKind: "claudeCode" | "codexCli" | "chatGptCodex" | "zcode";
   sourceLabel: string;
   sourceBrand: string;
   summary: UsageSummary;

@@ -76,7 +76,7 @@ export async function chooseCodexHome(currentPath?: string) {
     directory: true,
     multiple: false,
     defaultPath: currentPath,
-    title: "选择 Claude Code / Codex Home",
+    title: "选择 Claude Code / Codex / ZCode Home",
   });
   if (typeof selected !== "string") return null;
   return invoke<string>("set_codex_home", { path: selected });

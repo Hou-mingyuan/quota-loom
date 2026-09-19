@@ -6,6 +6,7 @@ pub enum DataSourceKind {
     ClaudeCode,
     CodexCli,
     ChatGptCodex,
+    ZCode,
 }
 
 impl DataSourceKind {
@@ -14,6 +15,7 @@ impl DataSourceKind {
             Self::ClaudeCode => "Claude Code",
             Self::CodexCli => "Codex CLI",
             Self::ChatGptCodex => "ChatGPT Codex",
+            Self::ZCode => "ZCode",
         }
     }
 
@@ -22,6 +24,7 @@ impl DataSourceKind {
             Self::ClaudeCode => "CLAUDE CODE / USAGE",
             Self::CodexCli => "CODEX CLI / USAGE",
             Self::ChatGptCodex => "CHATGPT CODEX / USAGE",
+            Self::ZCode => "ZCODE / USAGE",
         }
     }
 
@@ -30,6 +33,7 @@ impl DataSourceKind {
             Self::ClaudeCode => "QuotaLoom · Claude Code",
             Self::CodexCli => "QuotaLoom · Codex CLI",
             Self::ChatGptCodex => "QuotaLoom · ChatGPT Codex",
+            Self::ZCode => "QuotaLoom · ZCode",
         }
     }
 }

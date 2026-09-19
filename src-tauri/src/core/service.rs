@@ -193,7 +193,10 @@ impl UsageService {
     }
 
     pub fn account_weekly_usage(&self) -> Option<WeeklyUsage> {
-        if self.source_kind() == DataSourceKind::ClaudeCode {
+        if !matches!(
+            self.source_kind(),
+            DataSourceKind::CodexCli | DataSourceKind::ChatGptCodex
+        ) {
             return None;
         }
         let data_home = self.codex_home();
@@ -585,6 +588,16 @@ fn session_roots(data_home: &Path, source_kind: DataSourceKind) -> Vec<PathBuf> 
             data_home.join("sessions"),
             data_home.join("archived_sessions"),
         ],
+        DataSourceKind::ZCode => {
+            let cli_rollout = data_home.join("cli").join("rollout");
+            if cli_rollout.is_dir() {
+                vec![cli_rollout]
+            } else if data_home.join("rollout").is_dir() {
+                vec![data_home.join("rollout")]
+            } else {
+                vec![data_home.to_path_buf()]
+            }
+        }
     }
 }
 
@@ -621,6 +634,14 @@ fn detect_data_source(path: &Path) -> DataSourceKind {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if name == ".zcode"
+        || name == "zcode"
+        || name == "rollout"
+        || path.join("cli").join("rollout").is_dir()
+        || path.join("rollout").is_dir()
+    {
+        return DataSourceKind::ZCode;
+    }
     if name == ".claude"
         || name == "claude"
         || path.join("projects").is_dir()
@@ -833,6 +854,108 @@ mod tests {
         assert_eq!(after_rebuild.summary.calls, 1);
         assert_eq!(after_rebuild.summary.total_tokens, 55);
         assert_eq!(after_rebuild.summary.fresh_input_tokens, 40);
+        assert_eq!(after_rebuild.summary.cached_input_tokens, 10);
+        assert_eq!(after_rebuild.summary.output_tokens, 5);
+    }
+
+    fn zcode_usage_line(timestamp: &str, input: u64, cache_read: u64, output: u64) -> String {
+        line(json!({
+            "type": "model_io",
+            "sessionId": "sess_zcode",
+            "startedAt": timestamp,
+            "model": {"modelId": "GLM-5.3-Flash"},
+            "response": {"usage": {
+                "inputTokens": input,
+                "cacheReadTokens": cache_read,
+                "cacheWriteTokens": 0,
+                "outputTokens": output,
+                "totalTokens": input + output
+            }}
+        }))
+    }
+
+    #[test]
+    fn detects_zcode_homes_at_multiple_depths() {
+        let temp = TempDir::new().unwrap();
+        let zcode_home = temp.path().join(".zcode");
+        let cli = zcode_home.join("cli");
+        let rollout = cli.join("rollout");
+        fs::create_dir_all(&rollout).unwrap();
+        assert_eq!(detect_data_source(&zcode_home), DataSourceKind::ZCode);
+        assert_eq!(detect_data_source(&cli), DataSourceKind::ZCode);
+        assert_eq!(detect_data_source(&rollout), DataSourceKind::ZCode);
+        assert_eq!(
+            session_roots(&zcode_home, DataSourceKind::ZCode),
+            vec![rollout.clone()]
+        );
+        assert_eq!(
+            session_roots(&cli, DataSourceKind::ZCode),
+            vec![rollout.clone()]
+        );
+        assert_eq!(
+            session_roots(&rollout, DataSourceKind::ZCode),
+            vec![rollout.clone()]
+        );
+
+        let codex_home = temp.path().join(".codex");
+        fs::create_dir_all(codex_home.join("sessions")).unwrap();
+        assert_eq!(detect_data_source(&codex_home), DataSourceKind::CodexCli);
+    }
+
+    #[test]
+    fn syncs_zcode_rollout_appends_without_duplicates_and_rebuilds_rotations() {
+        let temp = TempDir::new().unwrap();
+        let zcode_home = temp.path().join(".zcode");
+        let rollout = zcode_home.join("cli/rollout");
+        fs::create_dir_all(&rollout).unwrap();
+        let session_path = rollout.join("model-io-sess_zcode.jsonl");
+        fs::write(
+            &session_path,
+            format!(
+                "{}{}",
+                zcode_usage_line("2026-07-14T08:00:00.000Z", 100, 40, 20),
+                zcode_usage_line("2026-07-14T08:01:00.000Z", 150, 50, 35),
+            ),
+        )
+        .unwrap();
+
+        let service = UsageService::open(zcode_home, temp.path().join("usage.sqlite3")).unwrap();
+        let first = service.sync().unwrap();
+        assert_eq!(first.imported_events, 2);
+        let snapshot = service.snapshot(all_time()).unwrap();
+        assert_eq!(snapshot.source_kind, DataSourceKind::ZCode);
+        assert_eq!(snapshot.source_label, "ZCode");
+        assert_eq!(snapshot.summary.calls, 2);
+        // input 汇总含缓存：(100+40) + (150+50)
+        assert_eq!(snapshot.summary.total_tokens, 395);
+        assert_eq!(snapshot.summary.fresh_input_tokens, 250);
+        assert_eq!(snapshot.summary.cached_input_tokens, 90);
+        assert_eq!(snapshot.summary.output_tokens, 55);
+
+        let mut file = OpenOptions::new().append(true).open(&session_path).unwrap();
+        file.write_all(zcode_usage_line("2026-07-14T08:02:00.000Z", 30, 0, 10).as_bytes())
+            .unwrap();
+        file.flush().unwrap();
+
+        let second = service.sync().unwrap();
+        assert_eq!(second.imported_events, 1);
+        assert_eq!(service.snapshot(all_time()).unwrap().summary.calls, 3);
+
+        // 64MB 轮换会覆盖同名文件：按截断处理，全量重建
+        fs::write(
+            &session_path,
+            zcode_usage_line("2026-07-14T09:00:00.000Z", 50, 10, 5),
+        )
+        .unwrap();
+
+        let rebuilt = service.sync().unwrap();
+        assert_eq!(rebuilt.rebuilt_files, 1);
+        assert_eq!(rebuilt.imported_events, 1);
+        let after_rebuild = service.snapshot(all_time()).unwrap();
+        assert_eq!(after_rebuild.summary.calls, 1);
+        // input 汇总 = 50 新输入 + 10 缓存读，total = 60 + 5 输出
+        assert_eq!(after_rebuild.summary.total_tokens, 65);
+        assert_eq!(after_rebuild.summary.fresh_input_tokens, 50);
         assert_eq!(after_rebuild.summary.cached_input_tokens, 10);
         assert_eq!(after_rebuild.summary.output_tokens, 5);
     }
