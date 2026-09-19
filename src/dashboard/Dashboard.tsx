@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Save,
   Settings2,
+  Share2,
   Sparkles,
   X,
 } from "lucide-react";
@@ -48,6 +49,7 @@ import {
   useUsageEvents,
   useWeeklyUsage,
 } from "../hooks/useUsage";
+import { ShareCard } from "./ShareCard";
 import type {
   ModelPriceEntry,
   RangePreset,
@@ -71,6 +73,7 @@ export function Dashboard() {
   const [source, setSource] = useState<SourceFilter>(loadSourceFilter);
   const [managingSources, setManagingSources] = useState(false);
   const [priceEditorOpen, setPriceEditorOpen] = useState(false);
+  const [shareCardOpen, setShareCardOpen] = useState(false);
   const [resettingCache, setResettingCache] = useState(false);
   useUsageEvents();
   const query = useUsage(preset, source);
@@ -132,6 +135,13 @@ export function Dashboard() {
             {homes.length > 0
               ? `${homes.length} 个数据目录`
               : (snapshot?.codexHome ?? "正在定位数据目录")}
+          </button>
+          <button
+            className="price-settings-button"
+            onClick={() => setShareCardOpen(true)}
+          >
+            <Share2 size={15} />
+            分享卡
           </button>
           <button
             className="price-settings-button"
@@ -575,6 +585,13 @@ export function Dashboard() {
       ) : null}
       {priceEditorOpen ? (
         <ModelPriceEditor onClose={() => setPriceEditorOpen(false)} />
+      ) : null}
+      {shareCardOpen && snapshot ? (
+        <ShareCard
+          snapshot={snapshot}
+          preset={preset}
+          onClose={() => setShareCardOpen(false)}
+        />
       ) : null}
       {managingSources ? (
         <SourceManager
