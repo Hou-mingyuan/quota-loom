@@ -26,6 +26,15 @@ fn display_key(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// 项目名：取路径（/ 或 \ 分隔）最后一个非空段。
+fn project_from_path(raw: &str) -> String {
+    raw.trim_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 pub fn normalize_model(raw: &str) -> String {
     let mut model = raw.trim().to_ascii_lowercase();
     if let Some((_, suffix)) = model.rsplit_once('/') {
@@ -277,6 +286,16 @@ fn process_claude_line(
     let event_id = message_id
         .map(|id| format!("claude:{id}"))
         .unwrap_or_else(|| format!("claude:{thread_id}:{}", cursor.event_index));
+    let project = value
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(project_from_path)
+        .filter(|project| !project.is_empty())
+        .or_else(|| cursor.project.clone())
+        .unwrap_or_default();
+    if !project.is_empty() {
+        cursor.project = Some(project.clone());
+    }
     events.push(UsageEvent {
         id: event_id,
         source_key: source_key.to_string(),
@@ -286,6 +305,7 @@ fn process_claude_line(
         model: cursor.current_model.clone(),
         tokens: delta,
         source_file: path.to_string_lossy().to_string(),
+        project,
     });
 }
 
@@ -449,6 +469,7 @@ fn process_zcode_line(
         model: cursor.current_model.clone(),
         tokens: delta,
         source_file: path.to_string_lossy().to_string(),
+        project: String::new(),
     });
 }
 
@@ -526,6 +547,8 @@ struct ZcodeDbUsageRow {
     cache_read_input_tokens: i64,
     cache_creation_input_tokens: i64,
     output_tokens: i64,
+    directory: Option<String>,
+    session_path: Option<String>,
 }
 
 fn read_zcode_db_usage(
@@ -563,12 +586,14 @@ fn read_zcode_db_usage(
     if max_rowid > last_rowid {
         let mut statement = connection
             .prepare(
-                "select rowid, session_id, model_id, started_at,
-                        input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
-                        output_tokens
-                 from model_usage
-                 where rowid > ?1 and rowid <= ?2
-                 order by rowid",
+                "select mu.rowid, mu.session_id, mu.model_id, mu.started_at,
+                        mu.input_tokens, mu.cache_read_input_tokens,
+                        mu.cache_creation_input_tokens, mu.output_tokens,
+                        s.directory, s.path
+                 from model_usage mu
+                 left join session s on s.id = mu.session_id
+                 where mu.rowid > ?1 and mu.rowid <= ?2
+                 order by mu.rowid",
             )
             .map_err(|error| format!("读取 ZCode 数据库失败 {}: {error}", path.display()))?;
         let mapped = statement
@@ -582,6 +607,8 @@ fn read_zcode_db_usage(
                     cache_read_input_tokens: row.get(5)?,
                     cache_creation_input_tokens: row.get(6)?,
                     output_tokens: row.get(7)?,
+                    directory: row.get(8)?,
+                    session_path: row.get(9)?,
                 })
             })
             .map_err(|error| format!("读取 ZCode 数据库失败 {}: {error}", path.display()))?;
@@ -610,6 +637,17 @@ fn read_zcode_db_usage(
                 .session_id
                 .filter(|session| !session.is_empty())
                 .unwrap_or_else(|| key.to_string());
+            cursor.thread_id = Some(thread_id.clone());
+            let project = row
+                .directory
+                .as_deref()
+                .or(row.session_path.as_deref())
+                .map(project_from_path)
+                .filter(|project| !project.is_empty())
+                .unwrap_or_default();
+            if !project.is_empty() {
+                cursor.project = Some(project.clone());
+            }
             cursor.event_index = cursor.event_index.saturating_add(1);
             let occurred_at = match row.started_at {
                 Some(millis) if millis > 0 => millis / 1000,
@@ -624,6 +662,7 @@ fn read_zcode_db_usage(
                 model: cursor.current_model.clone(),
                 tokens: totals,
                 source_file: path.to_string_lossy().to_string(),
+                project,
             });
         }
     }
@@ -682,6 +721,16 @@ fn process_line(
                         cursor.replay_active = true;
                     }
                 }
+                if let Some(cwd) = payload
+                    .get("cwd")
+                    .or_else(|| payload.get("workspace_path"))
+                    .and_then(Value::as_str)
+                {
+                    let project = project_from_path(cwd);
+                    if !project.is_empty() {
+                        cursor.project = Some(project);
+                    }
+                }
             }
         }
         "turn_context" => {
@@ -691,6 +740,12 @@ fn process_line(
                 .and_then(Value::as_str)
             {
                 cursor.current_model = normalize_model(model);
+            }
+            if let Some(cwd) = value.pointer("/payload/cwd").and_then(Value::as_str) {
+                let project = project_from_path(cwd);
+                if !project.is_empty() {
+                    cursor.project = Some(project);
+                }
             }
         }
         "event_msg" => process_token_event(value, source_key, path, cursor, events),
@@ -772,6 +827,7 @@ fn process_token_event(
         model: cursor.current_model.clone(),
         tokens: delta,
         source_file: path.to_string_lossy().to_string(),
+        project: cursor.project.clone().unwrap_or_default(),
     });
 }
 
@@ -1069,7 +1125,9 @@ mod tests {
         let connection = Connection::open(&db_path).unwrap();
         connection
             .execute_batch(
-                "create table model_usage (
+                "create table session (id text primary key, directory text, path text);
+                insert into session values ('sess_db', 'D:\\Workspace\\demo-project', 'D:\\Workspace\\demo-project');
+                create table model_usage (
                     id text primary key,
                     session_id text,
                     model_id text,
@@ -1090,6 +1148,7 @@ mod tests {
         assert_eq!(outcome.events.len(), 2);
         assert_eq!(outcome.events[0].id, "zcode:db:1");
         assert_eq!(outcome.events[0].thread_id, "sess_db");
+        assert_eq!(outcome.events[0].project, "demo-project");
         assert_eq!(outcome.events[0].tokens.input_tokens, 100);
         assert_eq!(outcome.events[0].tokens.cached_input_tokens, 40);
         assert_eq!(outcome.events[1].tokens.input_tokens, 10);

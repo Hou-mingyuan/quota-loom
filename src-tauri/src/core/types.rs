@@ -85,6 +85,8 @@ pub struct UsageEvent {
     pub model: String,
     pub tokens: TokenTotals,
     pub source_file: String,
+    /// 所属项目（数据源内的 cwd / workspace 路径末段），未知为空串。
+    pub project: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -99,6 +101,8 @@ pub struct SessionCursor {
     pub current_model: String,
     pub previous_total: Option<TokenTotals>,
     pub replay_active: bool,
+    /// 最近一次观测到的项目路径末段。
+    pub project: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +125,14 @@ pub struct UsageRange {
 
 fn default_bucket_seconds() -> i64 {
     3600
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUsage {
+    pub project: String,
+    pub total_tokens: u64,
+    pub calls: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -200,6 +212,7 @@ pub struct UsageSnapshot {
     pub summary: UsageSummary,
     pub trends: Vec<UsageTrendPoint>,
     pub models: Vec<ModelUsage>,
+    pub projects: Vec<ProjectUsage>,
     pub recent: Vec<RecentUsageEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_estimate: Option<QuotaEstimate>,

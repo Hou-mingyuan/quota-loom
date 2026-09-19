@@ -509,8 +509,33 @@ export function Dashboard() {
               </div>
             </article>
 
+            <article className="panel project-panel">
+              <PanelHeading code="B02" title="项目分布" meta="BY WORKSPACE" />
+              <div className="model-table">
+                <div className="table-row table-head">
+                  <span>PROJECT</span>
+                  <span>TOKENS</span>
+                  <span>CALLS</span>
+                </div>
+                {snapshot.projects.length === 0 ? (
+                  <EmptyLine />
+                ) : (
+                  snapshot.projects.slice(0, 8).map((project) => (
+                    <div className="table-row" key={project.project}>
+                      <span className="model-name">
+                        <i />
+                        {project.project}
+                      </span>
+                      <span>{formatTokens(project.totalTokens)}</span>
+                      <span>{formatInteger(project.calls)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </article>
+
             <article className="panel recent-panel">
-              <PanelHeading code="B02" title="最近调用" meta="LOCAL ONLY" />
+              <PanelHeading code="B03" title="最近调用" meta="LOCAL ONLY" />
               <div className="recent-list">
                 {snapshot.recent.length === 0 ? (
                   <EmptyLine />

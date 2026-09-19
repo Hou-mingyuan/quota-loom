@@ -232,6 +232,10 @@ function demoSnapshot(range: UsageRange, source = "all"): UsageSnapshot {
     },
     trends,
     models,
+    projects: [
+      { project: "demo-project", totalTokens: 628_400, calls: 21 },
+      { project: "side-quest", totalTokens: 171_300, calls: 8 },
+    ],
     recent: models.flatMap((model, modelIndex) =>
       Array.from({ length: modelIndex === 0 ? 5 : 2 }, (_, index) => ({
         id: `${model.model}-${index}`,

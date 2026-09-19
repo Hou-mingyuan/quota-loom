@@ -1240,7 +1240,9 @@ mod tests {
         let connection = rusqlite::Connection::open(&db_path).unwrap();
         connection
             .execute_batch(
-                "create table model_usage (
+                "create table session (id text primary key, directory text, path text);
+                insert into session values ('sess_z', 'D:\\Work\\demo', 'D:\\Work\\demo');
+                create table model_usage (
                     id text primary key,
                     session_id text,
                     model_id text,

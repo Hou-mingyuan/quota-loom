@@ -1,7 +1,7 @@
 use crate::core::pricing::{CatalogModelPrice, ModelPrice, DEFAULT_PRICES};
 use crate::core::types::{
-    DataSourceKind, ModelPriceEntry, ModelUsage, ParseOutcome, RecentUsageEvent, SessionCursor,
-    TokenTotals, UsageRange, UsageSnapshot, UsageSummary, UsageTrendPoint,
+    DataSourceKind, ModelPriceEntry, ModelUsage, ParseOutcome, ProjectUsage, RecentUsageEvent,
+    SessionCursor, TokenTotals, UsageRange, UsageSnapshot, UsageSummary, UsageTrendPoint,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::Decimal;
@@ -60,7 +60,8 @@ impl UsageDatabase {
                     cached_input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
                     source_file TEXT NOT NULL,
-                    source TEXT NOT NULL DEFAULT 'codexCli'
+                    source TEXT NOT NULL DEFAULT 'codexCli',
+                    project TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(occurred_at);
                 CREATE INDEX IF NOT EXISTS idx_usage_events_model_time ON usage_events(model, occurred_at);
@@ -80,6 +81,7 @@ impl UsageDatabase {
                     previous_cached INTEGER,
                     previous_output INTEGER,
                     replay_active INTEGER NOT NULL DEFAULT 0,
+                    project TEXT,
                     updated_at INTEGER NOT NULL
                 );
 
@@ -163,6 +165,38 @@ impl UsageDatabase {
                  ON usage_events(source, occurred_at);",
             )
             .map_err(|error| error.to_string())?;
+        // B4 项目维度：usage_events 与游标补 project 列
+        let has_project = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('usage_events') WHERE name = 'project'
+                 )",
+                [],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !has_project {
+            connection
+                .execute(
+                    "ALTER TABLE usage_events ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        let cursor_has_project = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('session_cursors') WHERE name = 'project'
+                 )",
+                [],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !cursor_has_project {
+            connection
+                .execute("ALTER TABLE session_cursors ADD COLUMN project TEXT", [])
+                .map_err(|error| error.to_string())?;
+        }
         for (model, display, input, cached, output) in DEFAULT_PRICES {
             connection
                 .execute(
@@ -183,7 +217,7 @@ impl UsageDatabase {
             .query_row(
                 "SELECT source_key, path, file_size, modified_ns, byte_offset, event_index,
                         thread_id, current_model, previous_input, previous_cached, previous_output,
-                        replay_active
+                        replay_active, project
                  FROM session_cursors WHERE source_key = ?1",
                 [source_key],
                 |row| {
@@ -209,6 +243,7 @@ impl UsageDatabase {
                         current_model: row.get(7)?,
                         previous_total,
                         replay_active: row.get::<_, i64>(11)? != 0,
+                        project: row.get(12)?,
                     })
                 },
             )
@@ -258,8 +293,8 @@ impl UsageDatabase {
                 .execute(
                     "INSERT OR IGNORE INTO usage_events
                      (id, source_key, thread_id, event_index, occurred_at, model,
-                      input_tokens, cached_input_tokens, output_tokens, source_file, source)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                      input_tokens, cached_input_tokens, output_tokens, source_file, source, project)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         event.id,
                         event.source_key,
@@ -272,6 +307,7 @@ impl UsageDatabase {
                         event.tokens.output_tokens as i64,
                         event.source_file,
                         source_key_text,
+                        event.project,
                     ],
                 )
                 .map_err(|error| error.to_string())? as u64;
@@ -281,14 +317,15 @@ impl UsageDatabase {
             .execute(
                 "INSERT INTO session_cursors
                  (source_key, path, file_size, modified_ns, byte_offset, event_index, thread_id,
-                  current_model, previous_input, previous_cached, previous_output, replay_active, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, strftime('%s','now'))
+                  current_model, previous_input, previous_cached, previous_output, replay_active, project, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, strftime('%s','now'))
                  ON CONFLICT(source_key) DO UPDATE SET
                     path=excluded.path, file_size=excluded.file_size, modified_ns=excluded.modified_ns,
                     byte_offset=excluded.byte_offset, event_index=excluded.event_index,
                     thread_id=excluded.thread_id, current_model=excluded.current_model,
                     previous_input=excluded.previous_input, previous_cached=excluded.previous_cached,
                     previous_output=excluded.previous_output, replay_active=excluded.replay_active,
+                    project=excluded.project,
                     updated_at=excluded.updated_at",
                 params![
                     outcome.cursor.source_key,
@@ -303,6 +340,7 @@ impl UsageDatabase {
                     previous.map(|tokens| tokens.cached_input_tokens as i64),
                     previous.map(|tokens| tokens.output_tokens as i64),
                     i64::from(outcome.cursor.replay_active),
+                    outcome.cursor.project,
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -471,6 +509,7 @@ impl UsageDatabase {
         let connection = self.connection.lock().map_err(|error| error.to_string())?;
         let mut models = query_models(&connection, range, source_filter)?;
         let prices = load_prices(&connection)?;
+        let projects = query_projects(&connection, range, source_filter)?;
         let threads = connection
             .query_row(
                 "SELECT COUNT(DISTINCT thread_id) FROM usage_events
@@ -547,6 +586,7 @@ impl UsageDatabase {
             summary,
             trends: query_trends(&connection, range, &prices, source_filter)?,
             models,
+            projects,
             recent,
             quota_estimate: None,
         })
@@ -755,6 +795,35 @@ fn query_recent(
         .map_err(|error| error.to_string())
 }
 
+fn query_projects(
+    connection: &Connection,
+    range: UsageRange,
+    source_filter: Option<&str>,
+) -> Result<Vec<ProjectUsage>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT project, COALESCE(SUM(input_tokens + output_tokens), 0), COUNT(*)
+             FROM usage_events WHERE occurred_at >= ?1 AND occurred_at <= ?2
+               AND (?3 IS NULL OR source = ?3) AND project != ''
+             GROUP BY project ORDER BY SUM(input_tokens + output_tokens) DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![range.start_at, range.end_at, source_filter],
+            |row| {
+                Ok(ProjectUsage {
+                    project: row.get(0)?,
+                    total_tokens: row.get::<_, i64>(1)?.max(0) as u64,
+                    calls: row.get::<_, i64>(2)?.max(0) as u64,
+                })
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
 fn load_prices(
     connection: &Connection,
 ) -> Result<std::collections::HashMap<String, ModelPrice>, String> {
@@ -829,6 +898,7 @@ mod tests {
                 output_tokens: 200,
             },
             source_file: "fixture.jsonl".into(),
+            project: String::new(),
         };
         database
             .apply_parse_outcome(
@@ -898,6 +968,7 @@ mod tests {
                                 output_tokens: 1_000_000,
                             },
                             source_file: "mixed.jsonl".into(),
+                            project: String::new(),
                         },
                         UsageEvent {
                             id: "codex:mixed:2".into(),
@@ -912,6 +983,7 @@ mod tests {
                                 output_tokens: 1_000_000,
                             },
                             source_file: "mixed.jsonl".into(),
+                            project: String::new(),
                         },
                         UsageEvent {
                             id: "codex:mixed:3".into(),
@@ -926,6 +998,7 @@ mod tests {
                                 output_tokens: 1_000,
                             },
                             source_file: "mixed.jsonl".into(),
+                            project: String::new(),
                         },
                     ],
                     reset_required: false,
@@ -996,6 +1069,7 @@ mod tests {
                             output_tokens: 1_000_000,
                         },
                         source_file: "custom.jsonl".into(),
+                        project: String::new(),
                     }],
                     reset_required: false,
                 },

@@ -49,6 +49,12 @@ export interface ModelPriceEntry {
   customized: boolean;
 }
 
+export interface ProjectUsage {
+  project: string;
+  totalTokens: number;
+  calls: number;
+}
+
 export interface RecentUsageEvent {
   id: string;
   threadId: string;
@@ -79,6 +85,7 @@ export interface UsageSnapshot {
   summary: UsageSummary;
   trends: UsageTrendPoint[];
   models: ModelUsage[];
+  projects: ProjectUsage[];
   recent: RecentUsageEvent[];
   quotaEstimate?: QuotaEstimate | null;
 }
