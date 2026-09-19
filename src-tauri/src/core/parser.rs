@@ -13,7 +13,13 @@ pub fn is_zcode_db_file(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()) == Some(ZCODE_DB_FILE_NAME)
 }
 
+/// 游标与事件的键：完整文件路径（多 Home 下避免不同来源同名文件互踩）。
 pub fn source_key(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+/// 线程展示兜底名：文件名。
+fn display_key(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned)
@@ -137,6 +143,8 @@ pub fn parse_session_file_for_source(
             parse_session_file(path, previous_cursor)
         }
         DataSourceKind::ZCode => parse_zcode_session_file(path, previous_cursor),
+        // All 只是快照聚合用的伪来源，不参与文件解析
+        DataSourceKind::All => Err("All 不是可解析的数据源".to_string()),
     }
 }
 
@@ -256,7 +264,7 @@ fn process_claude_line(
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| cursor.thread_id.clone())
-        .unwrap_or_else(|| source_key.to_string());
+        .unwrap_or_else(|| display_key(path));
     cursor.thread_id = Some(thread_id.clone());
     cursor.event_index = cursor.event_index.saturating_add(1);
     let occurred_at = value
@@ -422,7 +430,7 @@ fn process_zcode_line(
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| cursor.thread_id.clone())
-        .unwrap_or_else(|| source_key.to_string());
+        .unwrap_or_else(|| display_key(path));
     cursor.thread_id = Some(thread_id.clone());
     cursor.event_index = cursor.event_index.saturating_add(1);
     let occurred_at = value

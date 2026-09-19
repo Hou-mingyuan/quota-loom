@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DataSourceKind {
+    All,
     ClaudeCode,
     CodexCli,
     ChatGptCodex,
@@ -10,8 +11,20 @@ pub enum DataSourceKind {
 }
 
 impl DataSourceKind {
+    /// usage_events.source 列与前端过滤参数使用的稳定标识。
+    pub fn id_key(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::ClaudeCode => "claudeCode",
+            Self::CodexCli => "codexCli",
+            Self::ChatGptCodex => "chatGptCodex",
+            Self::ZCode => "zcode",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
+            Self::All => "全部来源",
             Self::ClaudeCode => "Claude Code",
             Self::CodexCli => "Codex CLI",
             Self::ChatGptCodex => "ChatGPT Codex",
@@ -21,6 +34,7 @@ impl DataSourceKind {
 
     pub fn brand(self) -> &'static str {
         match self {
+            Self::All => "ALL SOURCES / USAGE",
             Self::ClaudeCode => "CLAUDE CODE / USAGE",
             Self::CodexCli => "CODEX CLI / USAGE",
             Self::ChatGptCodex => "CHATGPT CODEX / USAGE",
@@ -30,6 +44,7 @@ impl DataSourceKind {
 
     pub fn window_title(self) -> &'static str {
         match self {
+            Self::All => "QuotaLoom · 全部来源",
             Self::ClaudeCode => "QuotaLoom · Claude Code",
             Self::CodexCli => "QuotaLoom · Codex CLI",
             Self::ChatGptCodex => "QuotaLoom · ChatGPT Codex",

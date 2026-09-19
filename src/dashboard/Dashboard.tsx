@@ -24,9 +24,10 @@ import {
   YAxis,
 } from "recharts";
 import {
-  chooseCodexHome,
+  chooseSourceHome,
   getUsedModelPrices,
   refreshModelsDevPrices,
+  removeSourceHome,
   resetUsageCache,
   syncUsage,
   updateModelPrice,
@@ -39,8 +40,20 @@ import {
   formatTime,
   formatTokens,
 } from "../lib/format";
-import { useUsage, useWeeklyUsage } from "../hooks/useUsage";
-import type { ModelPriceEntry, RangePreset, UsageTrendPoint } from "../types";
+import {
+  loadSourceFilter,
+  saveSourceFilter,
+  useSourceHomes,
+  useUsage,
+  useUsageEvents,
+  useWeeklyUsage,
+} from "../hooks/useUsage";
+import type {
+  ModelPriceEntry,
+  RangePreset,
+  SourceFilter,
+  UsageTrendPoint,
+} from "../types";
 
 type TrendChartPoint = UsageTrendPoint & {
   costUsd: number | null;
@@ -55,29 +68,27 @@ const rangeOptions: Array<{ value: RangePreset; label: string }> = [
 
 export function Dashboard() {
   const [preset, setPreset] = useState<RangePreset>("today");
-  const [selectingHome, setSelectingHome] = useState(false);
-  const [selectedHome, setSelectedHome] = useState<string>();
+  const [source, setSource] = useState<SourceFilter>(loadSourceFilter);
+  const [managingSources, setManagingSources] = useState(false);
   const [priceEditorOpen, setPriceEditorOpen] = useState(false);
   const [resettingCache, setResettingCache] = useState(false);
-  const query = useUsage(preset);
+  useUsageEvents();
+  const query = useUsage(preset, source);
+  const homes = useSourceHomes().data ?? [];
   const weeklyUsage = useWeeklyUsage().data;
   const snapshot = query.data;
   const trendData = snapshot ? normalizeTrendCosts(snapshot.trends) : [];
   const hasCost = trendData.some((point) => point.costUsd !== null);
+  const codexFamilyFilter = source === "codexCli" || source === "chatGptCodex";
+
+  function pickSource(next: SourceFilter) {
+    setSource(next);
+    saveSourceFilter(next);
+  }
 
   async function refresh() {
     await syncUsage();
     await query.refetch();
-  }
-
-  async function changeCodexHome() {
-    setSelectingHome(true);
-    try {
-      const selected = await chooseCodexHome(snapshot?.codexHome);
-      if (selected) setSelectedHome(selected);
-    } finally {
-      setSelectingHome(false);
-    }
   }
 
   async function resetCache() {
@@ -112,16 +123,15 @@ export function Dashboard() {
         <div className="topbar-actions">
           <button
             className="source-chip"
-            title="更换数据 Home"
-            onClick={() => void changeCodexHome()}
-            disabled={selectingHome}
+            title="管理数据目录"
+            onClick={() => setManagingSources(true)}
           >
             <span
               className={query.isError ? "status-dot fault" : "status-dot"}
             />
-            {selectingHome
-              ? "正在选择目录"
-              : (selectedHome ?? snapshot?.codexHome ?? "正在定位数据 Home")}
+            {homes.length > 0
+              ? `${homes.length} 个数据目录`
+              : (snapshot?.codexHome ?? "正在定位数据目录")}
           </button>
           <button
             className="price-settings-button"
@@ -142,6 +152,28 @@ export function Dashboard() {
       </header>
 
       <section className="range-row reveal reveal-2">
+        <div className="source-switch" role="group" aria-label="统计来源">
+          <button
+            className={source === "all" ? "active" : ""}
+            onClick={() => pickSource("all")}
+          >
+            全部
+          </button>
+          {homes
+            .filter(
+              (home, index) =>
+                homes.findIndex((other) => other.kind === home.kind) === index,
+            )
+            .map((home) => (
+              <button
+                key={home.kind}
+                className={source === home.kind ? "active" : ""}
+                onClick={() => pickSource(home.kind)}
+              >
+                {home.label}
+              </button>
+            ))}
+        </div>
         <div>
           <p className="eyebrow">OBSERVATION WINDOW</p>
         </div>
@@ -166,7 +198,9 @@ export function Dashboard() {
         <>
           <section
             className={`instrument-grid reveal reveal-3${
-              weeklyUsage || snapshot.quotaEstimate ? " has-weekly" : ""
+              (weeklyUsage && codexFamilyFilter) || snapshot.quotaEstimate
+                ? " has-weekly"
+                : ""
             }`}
           >
             <article className="hero-instrument">
@@ -212,7 +246,7 @@ export function Dashboard() {
               </span>
             </article>
 
-            {weeklyUsage ? (
+            {weeklyUsage && codexFamilyFilter ? (
               <article className="metric-instrument weekly">
                 <div className="instrument-label">
                   <CalendarClock size={15} /> WEEKLY REMAINING
@@ -517,7 +551,107 @@ export function Dashboard() {
       {priceEditorOpen ? (
         <ModelPriceEditor onClose={() => setPriceEditorOpen(false)} />
       ) : null}
+      {managingSources ? (
+        <SourceManager
+          homes={homes}
+          onClose={() => setManagingSources(false)}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function SourceManager({
+  homes,
+  onClose,
+}: {
+  homes: Array<{ path: string; kind: SourceFilter; label: string }>;
+  onClose: () => void;
+}) {
+  const [busyPath, setBusyPath] = useState<string>();
+
+  async function addHome() {
+    setBusyPath("__adding__");
+    try {
+      await chooseSourceHome();
+    } catch (error) {
+      window.alert(`添加数据目录失败：${String(error)}`);
+    } finally {
+      setBusyPath(undefined);
+    }
+  }
+
+  async function removeHome(path: string) {
+    if (
+      !window.confirm(
+        `移除数据目录 ${path}？\n该目录解析出的统计也会一并清除。`,
+      )
+    )
+      return;
+    setBusyPath(path);
+    try {
+      await removeSourceHome(path);
+    } catch (error) {
+      window.alert(`移除数据目录失败：${String(error)}`);
+    } finally {
+      setBusyPath(undefined);
+    }
+  }
+
+  return (
+    <div className="price-editor-overlay" role="presentation">
+      <section
+        className="price-editor source-manager"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="source-manager-title"
+      >
+        <header className="price-editor-heading">
+          <div>
+            <span>SOURCES</span>
+            <h2 id="source-manager-title">数据目录</h2>
+          </div>
+          <button onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+        <p className="price-editor-note">
+          每个目录按其内部结构识别为 Claude Code、Codex 或
+          ZCode，统计各自独立保存，可同时启用多个并在顶部切换查看。
+        </p>
+        <div className="price-editor-list">
+          {homes.length === 0 ? (
+            <div className="price-editor-empty">还没有数据目录</div>
+          ) : (
+            homes.map((home) => (
+              <div className="price-editor-row" key={home.path}>
+                <div className="price-model-name">
+                  <strong>{home.label}</strong>
+                  <small>{home.path}</small>
+                </div>
+                <button
+                  className="price-save-button"
+                  disabled={busyPath === home.path}
+                  onClick={() => void removeHome(home.path)}
+                >
+                  {busyPath === home.path ? "移除中" : "移除"}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+        <footer className="price-editor-status">
+          <button
+            className="price-save-button"
+            disabled={busyPath === "__adding__"}
+            onClick={() => void addHome()}
+          >
+            <RotateCcw size={14} />
+            {busyPath === "__adding__" ? "添加中" : "添加数据目录"}
+          </button>
+        </footer>
+      </section>
+    </div>
   );
 }
 

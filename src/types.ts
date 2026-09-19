@@ -61,10 +61,19 @@ export interface RecentUsageEvent {
   estimatedCostUsd: string | null;
 }
 
+export type SourceFilter =
+  "all" | "claudeCode" | "codexCli" | "chatGptCodex" | "zcode";
+
+export interface SourceHome {
+  path: string;
+  kind: SourceFilter;
+  label: string;
+}
+
 export interface UsageSnapshot {
   generatedAt: number;
   codexHome: string;
-  sourceKind: "claudeCode" | "codexCli" | "chatGptCodex" | "zcode";
+  sourceKind: "all" | "claudeCode" | "codexCli" | "chatGptCodex" | "zcode";
   sourceLabel: string;
   sourceBrand: string;
   summary: UsageSummary;
