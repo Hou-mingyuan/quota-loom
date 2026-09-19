@@ -210,5 +210,6 @@ function demoSnapshot(range: UsageRange): UsageSnapshot {
         estimatedCostUsd: (0.15 + index * 0.03).toFixed(4),
       })),
     ),
+    quotaEstimate: null,
   };
 }

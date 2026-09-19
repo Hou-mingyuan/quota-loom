@@ -498,7 +498,23 @@ impl UsageDatabase {
             trends: query_trends(&connection, range, &prices)?,
             models,
             recent,
+            quota_estimate: None,
         })
+    }
+
+    /// 平台计费口径的 token 总量（input + output），
+    /// 用作 ZCode 套餐余额估算的"今日已用"。
+    pub fn query_platform_tokens(&self, start_at: i64, end_at: i64) -> Result<u64, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+                 FROM usage_events WHERE occurred_at >= ?1 AND occurred_at <= ?2",
+                params![start_at, end_at],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|tokens| tokens.max(0) as u64)
+            .map_err(|error| error.to_string())
     }
 }
 

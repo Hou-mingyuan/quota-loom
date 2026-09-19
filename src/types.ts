@@ -71,12 +71,22 @@ export interface UsageSnapshot {
   trends: UsageTrendPoint[];
   models: ModelUsage[];
   recent: RecentUsageEvent[];
+  quotaEstimate?: QuotaEstimate | null;
 }
 
 export interface WeeklyUsage {
   usedPercent: number;
   remainingPercent: number;
   resetsAt: number | null;
+}
+
+export interface QuotaEstimate {
+  planName: string;
+  tokensPerDay: number;
+  usedTokens: number;
+  usedPercent: number;
+  remainingPercent: number;
+  resetsAt: number;
 }
 
 export interface SyncResult {

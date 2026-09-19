@@ -2,10 +2,12 @@ use crate::core::database::UsageDatabase;
 use crate::core::parser::{parse_session_file_for_source, source_key, ZCODE_DB_FILE_NAME};
 use crate::core::pricing::CatalogModelPrice;
 use crate::core::types::{
-    DataSourceKind, ModelPriceEntry, SyncResult, UsageRange, UsageSnapshot, WeeklyUsage,
+    DataSourceKind, ModelPriceEntry, QuotaEstimate, SyncResult, UsageRange, UsageSnapshot,
+    WeeklyUsage,
 };
 use directories::{ProjectDirs, UserDirs};
 use notify::{PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -199,8 +201,33 @@ impl UsageService {
 
     pub fn snapshot(&self, range: UsageRange) -> Result<UsageSnapshot, String> {
         let source_kind = self.source_kind();
-        self.database
-            .snapshot(&self.codex_home(), source_kind, range)
+        let mut snapshot = self
+            .database
+            .snapshot(&self.codex_home(), source_kind, range)?;
+        if source_kind == DataSourceKind::ZCode {
+            snapshot.quota_estimate = self.zcode_quota_estimate();
+        }
+        Ok(snapshot)
+    }
+
+    /// ZCode 套餐余额没有本地缓存可读，按平台计费口径（input + output）
+    /// 对配置的每日额度做估算；未配置（或额度为 0）时返回 None，UI 不渲染。
+    fn zcode_quota_estimate(&self) -> Option<QuotaEstimate> {
+        let preference = load_zcode_quota_preference()?;
+        if preference.tokens_per_day == 0 {
+            return None;
+        }
+        let now_local = chrono::Local::now();
+        let today_start = now_local
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .and_then(|time| time.and_local_timezone(chrono::Local).earliest())
+            .map(|time| time.timestamp())?;
+        let used_tokens = self
+            .database
+            .query_platform_tokens(today_start, now_local.timestamp())
+            .ok()?;
+        Some(build_quota_estimate(&preference, used_tokens, now_local))
     }
 
     pub fn account_weekly_usage(&self) -> Option<WeeklyUsage> {
@@ -590,6 +617,66 @@ fn codex_home_preference_path() -> Result<PathBuf, String> {
     Ok(app_project_dirs()?
         .config_local_dir()
         .join("codex-home.json"))
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ZcodeQuotaPreference {
+    plan_name: String,
+    tokens_per_day: u64,
+    #[serde(default)]
+    reset_hour_local: Option<u32>,
+}
+
+fn zcode_quota_preference_path() -> Result<PathBuf, String> {
+    Ok(app_project_dirs()?
+        .config_local_dir()
+        .join("zcode-quota.json"))
+}
+
+fn load_zcode_quota_preference() -> Option<ZcodeQuotaPreference> {
+    let data = std::fs::read(zcode_quota_preference_path().ok()?).ok()?;
+    serde_json::from_slice(&data).ok()
+}
+
+fn build_quota_estimate(
+    preference: &ZcodeQuotaPreference,
+    used_tokens: u64,
+    now_local: chrono::DateTime<chrono::Local>,
+) -> QuotaEstimate {
+    let used_percent = if preference.tokens_per_day > 0 {
+        used_tokens as f64 / preference.tokens_per_day as f64 * 100.0
+    } else {
+        0.0
+    };
+    let reset_hour = preference.reset_hour_local.unwrap_or(0).min(23);
+    let resets_at = next_local_reset(&now_local, reset_hour);
+    QuotaEstimate {
+        plan_name: preference.plan_name.clone(),
+        tokens_per_day: preference.tokens_per_day,
+        used_tokens,
+        used_percent,
+        remaining_percent: (100.0 - used_percent).clamp(0.0, 100.0),
+        resets_at,
+    }
+}
+
+fn next_local_reset(now_local: &chrono::DateTime<chrono::Local>, reset_hour: u32) -> i64 {
+    let today_reset = now_local
+        .date_naive()
+        .and_hms_opt(reset_hour, 0, 0)
+        .and_then(|time| time.and_local_timezone(chrono::Local).earliest())
+        .map(|time| time.timestamp());
+    match today_reset {
+        Some(reset) if reset > now_local.timestamp() => reset,
+        _ => now_local
+            .date_naive()
+            .succ_opt()
+            .and_then(|date| date.and_hms_opt(reset_hour, 0, 0))
+            .and_then(|time| time.and_local_timezone(chrono::Local).earliest())
+            .map(|time| time.timestamp())
+            .unwrap_or_else(|| now_local.timestamp() + 86_400),
+    }
 }
 
 fn session_roots(data_home: &Path, source_kind: DataSourceKind) -> Vec<PathBuf> {
@@ -1041,5 +1128,33 @@ mod tests {
         assert_eq!(snapshot.summary.total_tokens, 122);
         assert_eq!(snapshot.summary.cached_input_tokens, 10);
         assert_eq!(snapshot.summary.output_tokens, 12);
+    }
+
+    #[test]
+    fn builds_zcode_quota_estimate_with_future_reset() {
+        let preference = ZcodeQuotaPreference {
+            plan_name: "ZCode Weekend Build".to_string(),
+            tokens_per_day: 300_000_000,
+            reset_hour_local: None,
+        };
+        let now = chrono::Local::now();
+        let estimate = build_quota_estimate(&preference, 155_000_000, now);
+        assert_eq!(estimate.plan_name, "ZCode Weekend Build");
+        assert!((estimate.used_percent - 155.0 / 300.0 * 100.0).abs() < 1e-9);
+        assert!((estimate.remaining_percent - 145.0 / 300.0 * 100.0).abs() < 1e-9);
+        assert!(estimate.resets_at > now.timestamp());
+    }
+
+    #[test]
+    fn quota_estimate_remaining_never_negative() {
+        let preference = ZcodeQuotaPreference {
+            plan_name: "plan".to_string(),
+            tokens_per_day: 100,
+            reset_hour_local: Some(9),
+        };
+        let estimate = build_quota_estimate(&preference, 250, chrono::Local::now());
+        assert!((estimate.used_percent - 250.0).abs() < 1e-9);
+        assert_eq!(estimate.remaining_percent, 0.0);
+        assert!(estimate.resets_at > 0);
     }
 }

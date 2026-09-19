@@ -186,6 +186,8 @@ pub struct UsageSnapshot {
     pub trends: Vec<UsageTrendPoint>,
     pub models: Vec<ModelUsage>,
     pub recent: Vec<RecentUsageEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_estimate: Option<QuotaEstimate>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -194,6 +196,19 @@ pub struct WeeklyUsage {
     pub used_percent: f64,
     pub remaining_percent: f64,
     pub resets_at: Option<i64>,
+}
+
+/// ZCode 套餐额度估算：余额没有本地缓存，按平台计费口径
+/// （input + output）对「配置的每日额度」做估算，仅供趋势参考。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaEstimate {
+    pub plan_name: String,
+    pub tokens_per_day: u64,
+    pub used_tokens: u64,
+    pub used_percent: f64,
+    pub remaining_percent: f64,
+    pub resets_at: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

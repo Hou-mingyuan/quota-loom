@@ -165,7 +165,9 @@ export function Dashboard() {
       ) : snapshot ? (
         <>
           <section
-            className={`instrument-grid reveal reveal-3${weeklyUsage ? " has-weekly" : ""}`}
+            className={`instrument-grid reveal reveal-3${
+              weeklyUsage || snapshot.quotaEstimate ? " has-weekly" : ""
+            }`}
           >
             <article className="hero-instrument">
               <div className="instrument-label">
@@ -223,6 +225,35 @@ export function Dashboard() {
                 {weeklyUsage.resetsAt ? (
                   <small>{formatResetTime(weeklyUsage.resetsAt)} 重置</small>
                 ) : null}
+              </article>
+            ) : null}
+
+            {snapshot.quotaEstimate ? (
+              <article className="metric-instrument weekly">
+                <div className="instrument-label">
+                  <CalendarClock size={15} /> DAILY QUOTA · EST
+                </div>
+                <strong>
+                  {Math.round(snapshot.quotaEstimate.remainingPercent)}%
+                </strong>
+                <span>
+                  {snapshot.quotaEstimate.planName} · 今日已用{" "}
+                  {formatTokens(snapshot.quotaEstimate.usedTokens)}
+                </span>
+                <div className="weekly-progress" aria-hidden="true">
+                  <i
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        snapshot.quotaEstimate.remainingPercent,
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <small>
+                  {formatResetTime(snapshot.quotaEstimate.resetsAt)} 重置 ·
+                  平台口径估算
+                </small>
               </article>
             ) : null}
 
