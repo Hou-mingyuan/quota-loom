@@ -1,5 +1,5 @@
 use crate::core::database::UsageDatabase;
-use crate::core::parser::{parse_session_file_for_source, source_key};
+use crate::core::parser::{parse_session_file_for_source, source_key, ZCODE_DB_FILE_NAME};
 use crate::core::pricing::CatalogModelPrice;
 use crate::core::types::{
     DataSourceKind, ModelPriceEntry, SyncResult, UsageRange, UsageSnapshot, WeeklyUsage,
@@ -149,6 +149,17 @@ impl UsageService {
                 }
             };
             let previous_cursor = cursor.clone();
+            if source_kind == DataSourceKind::ZCode
+                && path.file_name().and_then(|name| name.to_str()) == Some(ZCODE_DB_FILE_NAME)
+                && previous_cursor.is_none()
+            {
+                // ZCode 数据库源首次启用：清理由 rollout jsonl 解析出的旧统计，避免双计
+                if let Err(error) = self.database.purge_legacy_zcode_rollout_events() {
+                    result
+                        .warnings
+                        .push(format!("清理旧版 ZCode 统计失败: {error}"));
+                }
+            }
             let outcome = match parse_session_file_for_source(&path, cursor, source_kind) {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -602,6 +613,13 @@ fn session_roots(data_home: &Path, source_kind: DataSourceKind) -> Vec<PathBuf> 
 }
 
 fn collect_session_files(data_home: &Path, source_kind: DataSourceKind) -> Vec<PathBuf> {
+    if source_kind == DataSourceKind::ZCode {
+        // 优先读 ZCode 本地数据库（结构化、无 64MB 轮换损失）
+        if let Some(db_path) = find_zcode_db(data_home) {
+            return vec![db_path];
+        }
+        // 旧版 ZCode 没有本地数据库：退回 rollout jsonl
+    }
     let mut files = Vec::new();
     for root in session_roots(data_home, source_kind) {
         if !root.exists() {
@@ -626,6 +644,17 @@ fn collect_session_files(data_home: &Path, source_kind: DataSourceKind) -> Vec<P
     }
     files.sort();
     files
+}
+
+fn find_zcode_db(data_home: &Path) -> Option<PathBuf> {
+    let mut candidates = vec![
+        data_home.join("cli").join("db").join(ZCODE_DB_FILE_NAME),
+        data_home.join("db").join(ZCODE_DB_FILE_NAME),
+    ];
+    if let Some(parent) = data_home.parent() {
+        candidates.push(parent.join("db").join(ZCODE_DB_FILE_NAME));
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn detect_data_source(path: &Path) -> DataSourceKind {
@@ -926,9 +955,9 @@ mod tests {
         assert_eq!(snapshot.source_kind, DataSourceKind::ZCode);
         assert_eq!(snapshot.source_label, "ZCode");
         assert_eq!(snapshot.summary.calls, 2);
-        // input 汇总含缓存：(100+40) + (150+50)
-        assert_eq!(snapshot.summary.total_tokens, 395);
-        assert_eq!(snapshot.summary.fresh_input_tokens, 250);
+        // input 已含缓存：100 + 150，缓存 40 + 50 只是其中拆分
+        assert_eq!(snapshot.summary.total_tokens, 305);
+        assert_eq!(snapshot.summary.fresh_input_tokens, 160);
         assert_eq!(snapshot.summary.cached_input_tokens, 90);
         assert_eq!(snapshot.summary.output_tokens, 55);
 
@@ -953,10 +982,64 @@ mod tests {
         assert_eq!(rebuilt.imported_events, 1);
         let after_rebuild = service.snapshot(all_time()).unwrap();
         assert_eq!(after_rebuild.summary.calls, 1);
-        // input 汇总 = 50 新输入 + 10 缓存读，total = 60 + 5 输出
-        assert_eq!(after_rebuild.summary.total_tokens, 65);
-        assert_eq!(after_rebuild.summary.fresh_input_tokens, 50);
+        // input = 50（已含 10 缓存读），total = 50 + 5 输出
+        assert_eq!(after_rebuild.summary.total_tokens, 55);
+        assert_eq!(after_rebuild.summary.fresh_input_tokens, 40);
         assert_eq!(after_rebuild.summary.cached_input_tokens, 10);
         assert_eq!(after_rebuild.summary.output_tokens, 5);
+    }
+
+    #[test]
+    fn syncs_zcode_database_preferring_db_over_rollout() {
+        let temp = TempDir::new().unwrap();
+        let zcode_home = temp.path().join(".zcode");
+        let rollout_dir = zcode_home.join("cli/rollout");
+        fs::create_dir_all(&rollout_dir).unwrap();
+        fs::write(
+            rollout_dir.join("model-io-sess_legacy.jsonl"),
+            zcode_usage_line("2026-07-14T08:00:00.000Z", 100_000, 0, 0),
+        )
+        .unwrap();
+
+        let service =
+            UsageService::open(zcode_home.clone(), temp.path().join("usage.sqlite3")).unwrap();
+        let rollout_only = service.sync().unwrap();
+        assert_eq!(rollout_only.imported_events, 1);
+        assert_eq!(
+            service.snapshot(all_time()).unwrap().summary.total_tokens,
+            100_000
+        );
+
+        // ZCode 本地数据库出现：收集层只认 db，且 db 源首启时清理 legacy jsonl 统计
+        let db_path = zcode_home.join("cli/db/db.sqlite");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "create table model_usage (
+                    id text primary key,
+                    session_id text,
+                    model_id text,
+                    started_at integer,
+                    input_tokens integer,
+                    output_tokens integer,
+                    cache_read_input_tokens integer,
+                    cache_creation_input_tokens integer
+                );
+                insert into model_usage values
+                    ('u1', 'sess_z', 'GLM-5.3-Flash', 1784016000000, 50, 5, 10, 0),
+                    ('u2', 'sess_z', 'GLM-5.3-Flash', 1784016060000, 60, 7, 0, 0);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let second = service.sync().unwrap();
+        assert_eq!(second.scanned_files, 1);
+        assert_eq!(second.imported_events, 2);
+        let snapshot = service.snapshot(all_time()).unwrap();
+        assert_eq!(snapshot.summary.calls, 2);
+        assert_eq!(snapshot.summary.total_tokens, 122);
+        assert_eq!(snapshot.summary.cached_input_tokens, 10);
+        assert_eq!(snapshot.summary.output_tokens, 12);
     }
 }

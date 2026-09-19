@@ -181,6 +181,17 @@ impl UsageDatabase {
             .map_err(|error| error.to_string())
     }
 
+    pub fn purge_legacy_zcode_rollout_events(&self) -> Result<u64, String> {
+        let connection = self.connection.lock().map_err(|error| error.to_string())?;
+        let deleted = connection
+            .execute(
+                "DELETE FROM usage_events WHERE source_key LIKE 'model-io-%'",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(deleted as u64)
+    }
+
     pub fn apply_parse_outcome(&self, outcome: &ParseOutcome) -> Result<u64, String> {
         let mut connection = self.connection.lock().map_err(|error| error.to_string())?;
         let transaction = connection
